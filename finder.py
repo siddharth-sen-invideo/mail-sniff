@@ -26,6 +26,8 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 
+import people as P
+
 try:
     import dns.resolver
     _HAS_DNS = True
@@ -63,12 +65,13 @@ CANDIDATE_PATHS = [
     "team", "our-team", "about/team", "staff", "people", "authors", "author",
     "contributors", "masthead", "editorial", "meet-the-team",
     "careers", "jobs", "press", "media", "media-kit", "advertise", "write-for-us",
+    "blog", "news", "articles", "insights", "resources",
     ".well-known/security.txt", "humans.txt",
 ]
 FEED_PATHS = ["feed", "rss", "rss.xml", "atom.xml", "feed.xml", "index.xml", "blog/feed"]
 LINK_KEYWORDS = ("contact", "about", "privacy", "terms", "legal", "impressum", "imprint",
                  "cookie", "team", "staff", "people", "author", "masthead", "write-for-us",
-                 "advertise", "press", "media", "career", "job")
+                 "advertise", "press", "media", "career", "job", "blog", "editorial")
 
 CATCHALL_LOCALS = {"info", "contact", "hello", "hi", "hey", "support", "team", "office",
                    "enquiries", "inquiries", "mail", "general", "help", "press", "admin"}
@@ -148,7 +151,8 @@ AUTHORITY_RANK = [
 LI_SKIP_SLUGS = {"company", "school", "jobs", "feed", "pub", "shareArticle", "sharing",
                  "login", "signup", "cws", "learning", "posts"}
 MAX_EMAILS_PER_DOMAIN = 6
-PER_DOMAIN_BUDGET = 30  # seconds; bot-walled domains can't stall the whole batch
+PER_DOMAIN_BUDGET = 50  # seconds; bot-walled domains can't stall the whole batch
+MAX_PEOPLE_PER_DOMAIN = 8
 
 _mx_cache: dict[str, bool] = {}
 
@@ -780,6 +784,8 @@ async def process_domain(client: httpx.AsyncClient, raw_domain: str) -> dict:
     jsonld_desig: dict[str, str] = {}    # email -> designation
     name_title: dict[str, str] = {}      # person name -> job title
     names: set[str] = set()
+    person_names: set[str] = set()       # validated humans (people engine)
+    author_links: list[str] = []
     gh_users: list[str] = []
     socials: list[str] = []
     pdfs: list[str] = []
@@ -817,6 +823,13 @@ async def process_domain(client: httpx.AsyncClient, raw_domain: str) -> dict:
                 jsonld_desig.setdefault(e, d)
         name_title.update(jt)
         names |= names_from(html)
+        # bylines on terms/privacy pages are legal prose, not authors
+        person_names |= P.harvest_person_names(
+            html, bylines=src not in ('terms page', 'privacy page',
+                                      'legal page', 'imprint page'))
+        for al in P.author_page_links(html, url):
+            if al not in author_links:
+                author_links.append(al)
         for gu in _github_users(html):
             if gu not in gh_users:
                 gh_users.append(gu)
@@ -914,6 +927,167 @@ async def process_domain(client: httpx.AsyncClient, raw_domain: str) -> dict:
         if dn:
             names.add(dn)
 
+    # ================= PEOPLE PASS: real humans, not info@ =================
+    # names+titles from free sources -> infer the domain's pattern -> generate
+    # -> verify for free. Every row labelled confirmed / likely / guess.
+    people: list[dict] = []
+    try:
+        brand = domain.split(".")[0]
+        cand: dict[str, str] = {}        # name -> title
+        for n in person_names:
+            cand.setdefault(n, name_title.get(n, ""))
+        for n, t in name_title.items():
+            if P.looks_like_person_name(n):
+                cand.setdefault(n, t)
+
+        cand = P.drop_brandy_names(cand, brand, domain)
+
+        # author archive pages: the byline author IS the outreach target
+        if author_links and left() > 14:
+            for (fu, fh) in await asyncio.gather(
+                    *[_fetch(client, u) for u in author_links[:4]]):
+                if not fh:
+                    continue
+                for e in find_emails(fh) | find_cfemails(fh):
+                    emails.setdefault(e, "author page")
+                for n in P.harvest_person_names(fh):
+                    cand.setdefault(n, "")
+                slug = urlparse(fu).path.rstrip("/").split("/")[-1].replace("-", " ")
+                sn = P.looks_like_person_name(slug.title())
+                if sn:
+                    cand.setdefault(sn, "")
+
+        # blog posts: follow a few articles and read their bylines. This is the
+        # sturdiest free name source and lands exactly on editors/writers.
+        if len(cand) < 6 and left() > 16 and base:
+            posts = []
+            for url, html in pages:
+                if not re.search(r"/(blog|news|articles|insights|resources)", url, re.I):
+                    continue
+                for href in HREF_RE.findall(html):
+                    if href.startswith(("mailto:", "tel:", "#", "javascript:")):
+                        continue
+                    try:
+                        u = urljoin(url, href.split("#")[0])
+                    except Exception:
+                        continue
+                    if urlparse(u).netloc.replace("www.", "") != domain.replace("www.", ""):
+                        continue
+                    path = urlparse(u).path.rstrip("/")
+                    if (re.search(r"/(blog|news|articles|insights)/[a-z0-9-]{8,}$", path, re.I)
+                            and u not in posts):
+                        posts.append(u)
+                if len(posts) >= 4:
+                    break
+            for (fu, fh) in await asyncio.gather(*[_fetch(client, u) for u in posts[:4]]):
+                if not fh:
+                    continue
+                for n in P.harvest_person_names(fh):
+                    cand.setdefault(n, "")
+                for al in P.author_page_links(fh, fu):
+                    if al not in author_links:
+                        author_links.append(al)
+            cand = P.drop_brandy_names(cand, brand, domain)
+
+        # RSS post authors (one fetch, many names)
+        if base and len(cand) < 6 and left() > 12:
+            for n in await P.feed_creators(_fetch, client, base):
+                cand.setdefault(n, "")
+
+        cand = P.drop_brandy_names(cand, brand, domain)
+
+        # public search-result snippets: name + job title, LinkedIn never fetched
+        if len(cand) < 8 and left() > 12:
+            for n, t in (await P.serp_people(client, brand, left)).items():
+                if n in cand and t and not cand[n]:
+                    cand[n] = t
+                else:
+                    cand.setdefault(n, t)
+
+        # confirmed personal addresses already found on the site
+        confirmed_local: dict[str, str] = {}
+        for email, src in emails.items():
+            local, _, edom = email.partition("@")
+            if edom != domain or local in ROLE_LOCALS or local in CATCHALL_LOCALS:
+                continue
+            confirmed_local[email] = src
+
+        # infer the domain's email pattern from a real address
+        pattern = None
+        for email in confirmed_local:
+            pattern = P.detect_pattern(email.split("@")[0], cand.keys())
+            if pattern:
+                break
+
+        # a published address only counts as a PERSON if we can name the human
+        # behind it; ethics@ / safety@ stay in the generic email column instead.
+        seen_emails = set()
+        for email, src in confirmed_local.items():
+            local = email.split("@")[0]
+            if local in P.CONCEPT_LOCALS:
+                continue
+            nm = P.match_local_to_name(local, cand.keys())
+            if not nm:
+                dn = derive_name(email)
+                nm = dn if (dn and len(dn.split()) >= 2) else None
+            if not nm:
+                continue
+            people.append({"name": nm, "title": cand.get(nm, ""), "email": email,
+                           "status": "confirmed", "source": src,
+                           "rank": P.role_rank(cand.get(nm, ""))})
+            seen_emails.add(email)
+
+        # generate + verify for people we have a name but no address for
+        todo = [(n, t) for n, t in cand.items()
+                if not any(p["name"] == n for p in people)]
+        todo.sort(key=lambda nt: P.role_rank(nt[1]))
+        todo = todo[:MAX_PEOPLE_PER_DOMAIN]
+
+        generated: list[tuple[str, str, str, str]] = []   # email, pattern, name, title
+        for n, t in todo:
+            for e, pn in P.gen_candidates(n, domain, pattern, limit=2):
+                if e not in seen_emails:
+                    seen_emails.add(e)
+                    generated.append((e, pn, n, t))
+
+        if generated and left() > 10:
+            hits = await P.search_confirm(client, [g[0] for g in generated], left)
+            grav = set()
+            unconfirmed = [g[0] for g in generated if g[0] not in hits][:6]
+            if unconfirmed and left() > 8:
+                res = await asyncio.gather(
+                    *[P.gravatar_exists(client, e) for e in unconfirmed])
+                grav = {e for e, ok in zip(unconfirmed, res) if ok}
+            mx_ok = _has_mailserver(domain)
+            for e, pn, n, t in generated:
+                if e in hits:
+                    status, why = "confirmed", "found in public search results"
+                elif e in grav:
+                    status, why = "confirmed", "registered Gravatar account"
+                elif pattern and pn == pattern and mx_ok:
+                    status, why = "likely", f"matches this domain's {pn} pattern"
+                else:
+                    status, why = "guess", f"{pn} pattern, unverified"
+                people.append({"name": n, "title": t, "email": e, "status": status,
+                               "source": why, "rank": P.role_rank(t)})
+
+        _ORDER = {"confirmed": 0, "likely": 1, "guess": 2}
+        people.sort(key=lambda p: (p["rank"], _ORDER.get(p["status"], 3),
+                                   len(p["email"]), p["email"]))
+        # one row per human: keep their best-verified address
+        deduped, seen_names = [], set()
+        for p in people:
+            key = (p["name"] or p["email"]).lower()
+            if key in seen_names:
+                continue
+            seen_names.add(key)
+            p.pop("rank", None)
+            deduped.append(p)
+        people = deduped[:MAX_PEOPLE_PER_DOMAIN]
+    except Exception as exc:      # people pass must never break the email result
+        print(f"[people] {domain}: {type(exc).__name__}: {exc}")
+        people = []
+
     # decision-maker LinkedIn (from links the site publishes; falls back to search)
     linkedin = _pick_linkedin(pages, name_title)
     if (not linkedin or linkedin.get("kind") == "company") and left() > 4:
@@ -926,7 +1100,8 @@ async def process_domain(client: httpx.AsyncClient, raw_domain: str) -> dict:
     result["names"] = sorted(names)[:4]
     result["designations"] = designations
     result["linkedin"] = linkedin
-    result["found"] = bool(out_emails)
+    result["people"] = people
+    result["found"] = bool(out_emails) or bool(people)
     return result
 
 

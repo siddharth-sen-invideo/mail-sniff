@@ -57,7 +57,7 @@ async def _run_job(job_id: str, domains: list[str]):
             async with sem:
                 try:
                     # hard ceiling so a bot-walled domain can't stall the batch
-                    res = await asyncio.wait_for(finder.process_domain(client, dom), timeout=40)
+                    res = await asyncio.wait_for(finder.process_domain(client, dom), timeout=65)
                 except asyncio.TimeoutError:
                     res = {"domain": dom, "normalized": finder.normalize_domain(dom),
                            "emails": [], "names": [], "found": False, "note": "timed out"}
@@ -104,10 +104,12 @@ async def get_job(job_id: str):
         c = r.get("confidence")
         if c in counts and r.get("found") is not None:
             counts[c] += 1
+    people = sum(len(r.get("people") or []) for r in job["results"])
+    named = sum(1 for r in job["results"] if (r.get("people") or []))
     return {
         "id": job_id, "total": job["total"], "done": job["done"],
         "running": job["running"], "found": found, "counts": counts,
-        "results": job["results"],
+        "people": people, "named": named, "results": job["results"],
     }
 
 
@@ -118,6 +120,12 @@ def _flatten(job: dict):
         emails = r.get("emails") or []
         names_cell = ", ".join(r.get("names") or [])
         desig_cell = ", ".join(r.get("designations") or [])
+        ppl = r.get("people") or []
+        people_cell = "\n".join(
+            " | ".join(x for x in [p.get("name") or "", p.get("title") or "",
+                                   p.get("email") or "",
+                                   (p.get("status") or "").upper()] if x)
+            for p in ppl) or "no named people found"
         li = r.get("linkedin") or {}
         if li.get("url"):
             who = " · ".join([x for x in [li.get("name"), li.get("role")] if x])
@@ -134,7 +142,8 @@ def _flatten(job: dict):
             email_cell = "email not found"
             conf = "Not found"
             detail = ""
-        rows.append([r["domain"], email_cell, names_cell, desig_cell, li_cell, conf, detail])
+        rows.append([r["domain"], people_cell, email_cell, names_cell, desig_cell,
+                     li_cell, conf, detail])
     return rows
 
 
@@ -146,8 +155,9 @@ async def export_csv(job_id: str):
     import csv
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["Domain", "Emails Found", "Names", "Designation", "LinkedIn (decision-maker)",
-                "Confidence", "Detail"])
+    w.writerow(["Domain", "People (name | title | email | status)", "Emails Found",
+                "Names", "Designation", "LinkedIn (decision-maker)", "Confidence",
+                "Detail"])
     for row in _flatten(job):
         w.writerow(row)
     data = "﻿" + buf.getvalue()  # BOM for Excel/Sheets
@@ -168,8 +178,9 @@ async def export_xlsx(job_id: str):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Contacts"
-    headers = ["Domain", "Emails Found", "Names", "Designation", "LinkedIn (decision-maker)",
-               "Confidence", "Detail"]
+    headers = ["Domain", "People (name | title | email | status)", "Emails Found",
+               "Names", "Designation", "LinkedIn (decision-maker)", "Confidence",
+               "Detail"]
     ws.append(headers)
     fill = PatternFill("solid", fgColor="0B0B12")
     font = Font(color="FFFFFF", bold=True)
@@ -179,7 +190,7 @@ async def export_xlsx(job_id: str):
         cell.alignment = Alignment(vertical="center")
     for row in _flatten(job):
         ws.append(row)
-    widths = [28, 42, 22, 20, 46, 12, 52]
+    widths = [26, 60, 38, 20, 18, 42, 12, 46]
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
     ws.freeze_panes = "A2"

@@ -101,6 +101,15 @@
   .em .src{color:var(--dim);font-size:11.5px;font-weight:400}
   .em .role{color:var(--mut);font-size:11.5px}
   .notfound{color:var(--faint)}
+  .ppl{display:flex;flex-direction:column;gap:11px;min-width:230px}
+  .prow{line-height:1.35}
+  .pname{font-weight:600;color:var(--ink);font-size:13.5px}
+  .ptitle{color:var(--mut);font-size:11.5px}
+  .pmail{color:var(--ink);font-size:13px}
+  .pst{font-size:10.5px;letter-spacing:.04em;text-transform:uppercase}
+  .pst.confirmed{color:var(--ink);font-weight:600}
+  .pst.likely{color:var(--mut)}
+  .pst.guess{color:var(--dim)}
   .mut{color:var(--mut);font-size:13px}
   .mut .none,.li-cell .none{color:var(--faint)}
   .li-cell a{color:var(--ink);font-size:13px;text-decoration:none;border-bottom:1px solid var(--line2)}
@@ -266,6 +275,7 @@ z"/></svg>
     <div class="stats">
       <div class="stat"><div class="n" id="s-scanned">0</div><div class="l">Scanned</div></div>
       <div class="stat"><div class="n" id="s-found">0</div><div class="l">Emails found</div></div>
+      <div class="stat"><div class="n" id="s-people">0</div><div class="l">Named people</div></div>
       <div class="stat muted"><div class="n" id="s-hi">0</div><div class="l">High confidence</div></div>
       <div class="stat muted"><div class="n" id="s-md">0</div><div class="l">Medium</div></div>
       <div class="stat muted"><div class="n" id="s-lo">0</div><div class="l">Low</div></div>
@@ -283,7 +293,7 @@ z"/></svg>
       <button class="btn-sec" id="xlsx">Export Excel</button>
     </div>
     <table class="tbl">
-      <thead><tr><th class="idx">#</th><th>Domain</th><th>Emails found</th><th>Names</th><th>Designation</th><th>LinkedIn</th><th>Confidence</th></tr></thead>
+      <thead><tr><th class="idx">#</th><th>Domain</th><th>People</th><th>Emails found</th><th>LinkedIn</th><th>Confidence</th></tr></thead>
       <tbody id="tbody"></tbody>
     </table>
   </section>
@@ -397,12 +407,13 @@ function petReact(n){
 }
 function copyTable(){
   if(!lastResults.length)return;
-  const head=["Domain","Emails","Names","Designation","LinkedIn","Confidence"];
+  const head=["Domain","People","Emails","Names","Designation","LinkedIn","Confidence"];
   const CL={high:"High",medium:"Medium",low:"Low"};
   const rows=lastResults.map(r=>{
     const emails=(r.emails&&r.emails.length)?r.emails.map(e=>e.email).join(", "):"email not found";
     const li=(r.linkedin&&r.linkedin.url)?r.linkedin.url:"";
-    return [r.domain,emails,(r.names||[]).join(", "),(r.designations||[]).join(", "),li,(CL[r.confidence]||"Not found")].join("\t");
+    const ppl=(r.people||[]).map(p=>[p.name,p.title,p.email,(p.status||"").toUpperCase()].filter(Boolean).join(" | ")).join(" ;; ");
+    return [r.domain,ppl,emails,(r.names||[]).join(", "),(r.designations||[]).join(", "),li,(CL[r.confidence]||"Not found")].join("\t");
   });
   const tsv=[head.join("\t"),...rows].join("\n");
   const done=()=>{const b=$("#copy"); b.textContent="Copied ✓"; setTimeout(()=>b.textContent="Copy table",1500);};
@@ -449,7 +460,7 @@ async function poll(){
   const j=await (await fetch("/api/job/"+jobId)).json();
   lastResults=j.results;
   if(j.found>prevFound){petReact(j.found-prevFound);} prevFound=j.found;
-  animateNum($("#s-scanned"),j.done); animateNum($("#s-found"),j.found);
+  animateNum($("#s-scanned"),j.done); animateNum($("#s-found"),j.found); animateNum($("#s-people"),j.people||0);
   animateNum($("#s-hi"),j.counts.high); animateNum($("#s-md"),j.counts.medium); animateNum($("#s-lo"),j.counts.low);
   const pct=j.total?Math.round(j.done/j.total*100):0;
   $("#barfill").style.width=pct+"%"; $("#barpct").textContent=pct+"%";
@@ -478,8 +489,16 @@ function render(){
     else if(r.emails&&r.emails.length) emailsHtml=`<div class="emails">`+r.emails.map(e=>
         `<div class="em">${esc(e.email)}</div>`).join("")+`</div>`;
     else emailsHtml=`<span class="notfound">email not found</span>`;
-    const names=(r.names&&r.names.length)?esc(r.names.join(", ")):`<span class="none">-</span>`;
-    const desig=(r.designations&&r.designations.length)?esc(r.designations.join(", ")):`<span class="none">-</span>`;
+    let ppl=`<span class="none">-</span>`;
+    if(r.people&&r.people.length){
+      ppl=`<div class="ppl">`+r.people.map(p=>
+        `<div class="prow">`+
+        (p.name?`<span class="pname">${esc(p.name)}</span>`:``)+
+        (p.title?` <span class="ptitle">${esc(p.title)}</span>`:``)+
+        `<br/><span class="pmail">${esc(p.email)}</span> `+
+        `<span class="pst ${esc(p.status)}" title="${esc(p.source||'')}">${esc(p.status)}</span>`+
+        `</div>`).join("")+`</div>`;
+    }else if(!pending){ ppl=`<span class="notfound">no named people</span>`; }
     let li=`<span class="none">-</span>`;
     if(r.linkedin&&r.linkedin.url){
       const who=[r.linkedin.name,r.linkedin.role].filter(Boolean).join(" · ");
@@ -490,9 +509,8 @@ function render(){
     return `<tr class="${pending?'pending':''}" style="animation-delay:${Math.min(i*22,320)}ms">
       <td class="idx">${i+1}</td>
       <td><span class="dom">${esc(r.domain)}</span>${r.normalized&&r.normalized!==r.domain?`<span class="norm">${esc(r.normalized)}</span>`:""}</td>
+      <td>${ppl}</td>
       <td>${emailsHtml}</td>
-      <td class="mut">${names}</td>
-      <td class="mut">${desig}</td>
       <td class="li-cell">${li}</td>
       <td><span class="conf ${conf}">${confLabel}</span></td></tr>`;
   }).join("");
