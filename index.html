@@ -1,0 +1,510 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Mail Sniff</title>
+<link rel="icon" href="/assets/dog.svg"/>
+<style>
+  @font-face{font-family:'Sora';src:url('/fonts/Sora-Light.ttf') format('truetype');font-weight:300;font-display:swap}
+  @font-face{font-family:'Sora';src:url('/fonts/Sora-Regular.ttf') format('truetype');font-weight:400;font-display:swap}
+  @font-face{font-family:'Sora';src:url('/fonts/Sora-Medium.ttf') format('truetype');font-weight:500;font-display:swap}
+  @font-face{font-family:'Sora';src:url('/fonts/Sora-SemiBold.ttf') format('truetype');font-weight:600;font-display:swap}
+  @font-face{font-family:'Sora';src:url('/fonts/Sora-Bold.ttf') format('truetype');font-weight:700;font-display:swap}
+  @font-face{font-family:'Sora';src:url('/fonts/Sora-ExtraBold.ttf') format('truetype');font-weight:800;font-display:swap}
+
+  :root{
+    --bg:#ffffff; --panel:#fafafa; --ink:#0a0a0a; --ink2:#404040;
+    --mut:#737373; --dim:#a3a3a3; --faint:#c8c8c8;
+    --line:#ebebeb; --line2:#e0e0e0;
+    --ease:cubic-bezier(.16,1,.3,1);
+    --font:'Sora',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    font-family:var(--font); color:var(--ink); background:var(--bg);
+    -webkit-font-smoothing:antialiased; letter-spacing:-0.01em; line-height:1.5;
+  }
+  ::selection{background:#0a0a0a;color:#fff}
+  a{color:inherit}
+
+  .wrap{max-width:1080px;margin:0 auto;padding:64px 28px 120px}
+
+  /* header */
+  header.hero{margin-bottom:40px;animation:rise .7s var(--ease) both}
+  .eyebrow{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--mut);
+    letter-spacing:.02em;margin:2px 0 18px}
+  .eyebrow .dot{width:5px;height:5px;border-radius:50%;background:var(--ink);display:inline-block}
+  h1{font-size:clamp(38px,6vw,60px);font-weight:700;letter-spacing:-.035em;line-height:1.0;margin:0 0 16px}
+  .sub{color:var(--mut);font-size:17px;max-width:520px;font-weight:400}
+
+  /* input */
+  .panel{border:1.5px solid #9a9a9a;border-radius:16px;background:var(--bg);
+    animation:rise .7s var(--ease) .06s both}
+  .input-pad{padding:20px}
+  textarea{width:100%;min-height:150px;resize:vertical;border:none;outline:none;background:transparent;
+    color:var(--ink);font-family:var(--font);font-size:15px;line-height:1.7;padding:2px}
+  textarea::placeholder{color:var(--faint)}
+  .bar-row{display:flex;align-items:center;gap:14px;margin-top:16px;padding-top:16px;border-top:1px solid var(--line);flex-wrap:wrap}
+  .count{font-size:13.5px;color:var(--mut);margin-right:auto}
+  .count b{color:var(--ink);font-weight:600}
+
+  button,.filelbl{font-family:var(--font);cursor:pointer;font-size:14px;font-weight:500;
+    border-radius:10px;transition:all .2s var(--ease)}
+  .btn{background:var(--ink);color:#fff;border:none;padding:11px 20px}
+  .btn:hover{background:#262626}
+  .btn:active{transform:translateY(1px)}
+  .btn:disabled{background:var(--faint);cursor:default;transform:none}
+  .btn-sec{background:var(--bg);color:var(--ink);border:1px solid var(--line2);padding:9px 15px}
+  .btn-sec:hover{border-color:var(--ink);background:var(--panel)}
+  .filelbl{display:inline-flex;align-items:center;gap:7px;color:var(--mut);border:1px solid var(--line2);
+    padding:9px 14px;font-weight:400}
+  .filelbl:hover{border-color:var(--ink);color:var(--ink)}
+  input[type=file]{display:none}
+
+  /* progress */
+  .prog{margin-top:40px;display:none}
+  .prog.on{display:block;animation:rise .6s var(--ease) both}
+  .stats{display:flex;gap:48px;flex-wrap:wrap;margin-bottom:22px}
+  .stat .n{font-size:34px;font-weight:700;letter-spacing:-.03em;line-height:1;font-variant-numeric:tabular-nums}
+  .stat .l{font-size:12.5px;color:var(--mut);margin-top:6px;font-weight:400}
+  .stat.muted .n{color:var(--ink2)}
+  .track{height:2px;background:var(--line);border-radius:2px;overflow:hidden}
+  .track > i{display:block;height:100%;width:0;background:var(--ink);transition:width .6s var(--ease)}
+  .track-lbl{display:flex;justify-content:space-between;font-size:12.5px;color:var(--mut);margin-top:12px}
+  .live{display:inline-flex;align-items:center;gap:7px}
+  .live .pd{width:6px;height:6px;border-radius:50%;background:var(--ink);animation:blink 1.2s infinite}
+
+  /* results */
+  .res{margin-top:52px;display:none}
+  .res.on{display:block;animation:rise .6s var(--ease) both}
+  .res-head{display:flex;align-items:center;gap:16px;margin-bottom:20px;flex-wrap:wrap}
+  .res-head h2{font-size:15px;font-weight:600;margin:0;letter-spacing:-.01em}
+  .res-head .n{font-size:15px;color:var(--dim);font-weight:400}
+  .search{flex:1;min-width:180px;border:1px solid var(--line2);border-radius:10px;padding:10px 14px;
+    font-family:var(--font);font-size:14px;color:var(--ink);outline:none;background:var(--bg);transition:border .2s}
+  .search::placeholder{color:var(--faint)}
+  .search:focus{border-color:var(--ink)}
+
+  .tbl{width:100%;border-collapse:collapse}
+  .tbl thead th{text-align:left;font-size:11px;letter-spacing:.06em;text-transform:uppercase;
+    color:var(--dim);font-weight:500;padding:0 20px 12px;border-bottom:1px solid var(--line)}
+  .tbl tbody td{padding:18px 20px;border-bottom:1px solid var(--line);font-size:14px;vertical-align:top}
+  .tbl tbody tr{animation:rowin .5s var(--ease) both}
+  .tbl tbody tr:hover{background:var(--panel)}
+  .idx{color:var(--faint);width:34px;font-variant-numeric:tabular-nums}
+  .dom{font-weight:600;color:var(--ink)}
+  .dom .norm{display:block;color:var(--dim);font-size:12px;font-weight:400;margin-top:3px}
+  .emails{display:flex;flex-direction:column;gap:9px}
+  .em{color:var(--ink);font-size:13.5px;line-height:1.35}
+  .em .src{color:var(--dim);font-size:11.5px;font-weight:400}
+  .em .role{color:var(--mut);font-size:11.5px}
+  .notfound{color:var(--faint)}
+  .mut{color:var(--mut);font-size:13px}
+  .mut .none,.li-cell .none{color:var(--faint)}
+  .li-cell a{color:var(--ink);font-size:13px;text-decoration:none;border-bottom:1px solid var(--line2)}
+  .li-cell a:hover{border-color:var(--ink)}
+  .li-cell .who{display:block;color:var(--mut);font-size:11.5px;margin-top:3px}
+  .li-cell .guess{display:block;color:var(--dim);font-size:10.5px;margin-top:2px}
+
+  /* confidence - text only, weight/tone encodes level */
+  .conf{font-size:13px;font-weight:400}
+  .conf.high{color:var(--ink);font-weight:600}
+  .conf.medium{color:var(--mut)}
+  .conf.low{color:var(--dim)}
+  .conf.none{color:var(--faint)}
+  .conf.pending{color:var(--faint)}
+  tr.pending td{color:var(--faint)}
+  tr.pending .sk{display:inline-block;width:120px;height:12px;border-radius:3px;background:var(--line);
+    animation:pulse 1.4s infinite}
+
+  .foot{margin-top:56px;color:var(--dim);font-size:12.5px;line-height:1.7;max-width:760px}
+
+  @keyframes rise{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+  @keyframes rowin{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:.25}}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+  @media (max-width:760px){
+    .stats{gap:28px}
+    .tbl thead th:nth-child(4),.tbl tbody td:nth-child(4),
+    .tbl thead th:nth-child(6),.tbl tbody td:nth-child(6){display:none}
+  }
+  /* ---- brand logo (in header) ---- */
+  .brandrow{display:flex;align-items:center;gap:14px;margin-bottom:14px}
+  .brand{height:clamp(38px,6vw,60px);width:auto;flex:none;display:block}
+  .brandrow h1{margin:0}
+
+  /* ---- mascot: Sniff, the friendly mail-scout pup (fixed, bottom-right) ---- */
+  #pet{position:fixed;right:26px;bottom:22px;width:138px;z-index:60;pointer-events:none}
+  #pet .bubble{position:absolute;bottom:100%;right:4px;margin-bottom:12px;white-space:nowrap;
+    background:var(--ink);color:#fff;font-size:12px;font-weight:500;padding:7px 12px;border-radius:11px;
+    opacity:0;transform:translateY(6px);transition:opacity .35s var(--ease),transform .35s var(--ease)}
+  #pet .bubble::after{content:"";position:absolute;top:100%;right:28px;border:5px solid transparent;border-top-color:var(--ink)}
+  #pet.show .bubble{opacity:1;transform:translateY(0)}
+  .pop1{position:absolute;top:2px;left:50%;font-size:14px;font-weight:700;color:var(--ink);
+    transform:translateX(-50%);animation:pop1 .9s var(--ease) forwards}
+  .pet-svg{width:100%;height:auto;display:block;overflow:visible}
+  .pet-svg *{transform-box:fill-box}
+  .blob .k{fill:var(--ink)}
+  .blob .st{fill:none;stroke:var(--ink);stroke-width:3;stroke-linecap:round;stroke-linejoin:round}
+
+  /* whole-body motion — single exact silhouette (never reshaped) */
+  .char{transform-origin:50% 92%}
+  .fx{opacity:0}
+
+  .pet.idle .char{animation:idleBreathe 3.6s ease-in-out infinite}
+  .pet.busy .char{animation:sniffBob .5s ease-in-out infinite}
+  .pet.done:not(.sad) .char{animation:celebrateJump .82s ease-in-out infinite}
+  .pet.done:not(.sad) .fx{opacity:1}
+  .pet.done:not(.sad) .fx > *{animation:twinkle 1s ease-in-out infinite}
+  .pet.done:not(.sad) .fx > *:nth-child(2){animation-delay:.33s}
+  .pet.done:not(.sad) .fx > *:nth-child(3){animation-delay:.66s}
+  .pet.done.sad .char{animation:sadDroop 4.5s ease-in-out infinite}
+
+  @keyframes idleBreathe{0%,100%{transform:translateY(0) scaleY(1)}50%{transform:translateY(-1.5px) scaleY(1.02)}}
+  @keyframes sniffBob{0%,100%{transform:translateY(0) rotate(0)}50%{transform:translateY(-3px) rotate(-2.5deg)}}
+  @keyframes celebrateJump{0%{transform:translateY(0) scaleY(1)}12%{transform:translateY(3px) scaleY(.9)}42%{transform:translateY(-26px) scaleY(1.08) rotate(-3deg)}66%{transform:translateY(0) scaleY(.93)}82%{transform:translateY(-8px) scaleY(1.03)}100%{transform:translateY(0) scaleY(1)}}
+  @keyframes twinkle{0%,100%{opacity:0;transform:scale(.35) rotate(0)}50%{opacity:1;transform:scale(1) rotate(45deg)}}
+  @keyframes sadDroop{0%,100%{transform:translateY(9px) scaleY(.9) rotate(1.5deg)}50%{transform:translateY(11px) scaleY(.88) rotate(1.5deg)}}
+
+  @keyframes pop1{0%{opacity:0;transform:translate(-50%,6px)}20%{opacity:1}100%{opacity:0;transform:translate(-50%,-34px)}}
+
+  @media (max-width:820px){#pet{display:none}}
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="hero">
+    <div class="brandrow">
+      <svg class="brand" viewBox="108 74 208 132" aria-hidden="true"><path fill="#0a0a0a" d="M244.407135,144.615631 
+	C245.412216,145.972900 246.097458,147.152969 247.031540,148.083160 
+	C249.171646,150.214401 248.899643,151.941025 246.712341,153.921402 
+	C244.250443,156.150391 242.003799,158.627045 239.756165,161.080826 
+	C233.720459,167.670197 234.890793,174.254089 242.790085,178.440933 
+	C250.893875,182.736160 254.614853,180.526978 254.657578,171.404404 
+	C254.680969,166.409012 254.709152,161.413544 254.776276,156.418655 
+	C254.782425,155.961060 255.088226,155.507507 255.411102,154.625183 
+	C262.173828,154.420013 267.860870,156.770798 271.410004,162.582153 
+	C274.763611,168.073380 279.027527,170.181259 285.442596,169.812943 
+	C292.760895,169.392761 295.308746,173.279739 293.215668,180.336395 
+	C289.744843,192.037979 284.347076,196.083405 272.170105,196.097931 
+	C268.172852,196.102707 264.173126,195.997879 260.178833,196.104584 
+	C250.762283,196.356110 242.951492,193.104080 236.855103,185.825714 
+	C233.861572,182.251846 230.625122,178.876175 227.727158,175.229202 
+	C225.463058,172.379929 222.869675,171.571182 219.054214,172.880798 
+	C225.236145,180.251801 231.235275,187.404831 237.404739,194.760956 
+	C226.752396,198.590317 216.769562,196.161011 210.398819,188.826157 
+	C206.359726,184.175827 202.173065,179.652496 198.005280,175.115677 
+	C196.172287,173.120392 194.486771,171.152939 194.670822,168.161087 
+	C194.826080,165.637665 193.072815,165.198273 191.034515,165.203400 
+	C183.872955,165.221390 176.710312,165.298309 169.550323,165.195679 
+	C166.957382,165.158524 165.688126,166.739334 164.375534,168.503281 
+	C160.699509,173.443329 155.963470,177.111694 150.199554,179.144073 
+	C147.087799,180.241287 146.277084,181.978165 146.263855,185.056152 
+	C146.216171,196.134277 146.119598,196.133789 135.033508,196.097595 
+	C134.367294,196.095413 133.701096,196.097458 133.034882,196.096191 
+	C125.766571,196.082321 125.765800,196.082230 125.753380,188.982407 
+	C125.749008,186.484131 125.894058,183.975647 125.718681,181.489609 
+	C125.308968,175.681427 125.774323,170.466583 130.740967,166.174438 
+	C133.608994,163.695923 134.478683,159.681458 134.703232,155.686203 
+	C135.183578,147.139587 133.060181,138.373627 137.122086,130.094269 
+	C138.308853,127.675270 135.486206,126.804337 134.067566,125.608818 
+	C122.566757,115.916908 118.577568,100.550743 124.117592,86.734100 
+	C124.828835,84.960266 125.302773,82.900093 127.930847,81.700348 
+	C128.192963,84.473206 128.222885,87.042511 128.704773,89.524048 
+	C131.960281,106.288612 145.482819,117.507576 162.638306,117.632019 
+	C175.462173,117.725052 188.291275,117.854233 201.110748,117.599434 
+	C216.881088,117.285988 229.037720,123.848007 238.369690,136.213394 
+	C240.375031,138.870605 242.259933,141.618713 244.407135,144.615631 
+M264.205353,167.142151 
+	C262.564453,168.136017 261.878540,169.531540 262.799805,171.306259 
+	C263.514313,172.682693 264.865784,172.874878 266.238525,172.447083 
+	C267.415588,172.080292 268.381714,171.214432 268.351227,169.977020 
+	C268.297607,167.805679 267.011597,166.728470 264.205353,167.142151 
+z"/><path fill="#0a0a0a" d="M158.602966,188.406967 
+	C157.052628,186.471085 155.145370,185.238251 154.501495,183.077530 
+	C162.187073,175.402817 169.083115,175.474243 175.960373,183.362930 
+	C179.105789,186.970947 182.076294,190.731415 185.765060,195.196030 
+	C180.067459,196.771591 175.109085,195.613907 170.325974,196.174408 
+	C164.230850,196.888672 162.193817,191.878143 158.602966,188.406967 
+z"/><path fill="#0a0a0a" d="M300.565857,167.645172 
+	C298.889862,169.066803 297.665985,171.552216 295.478241,169.187729 
+	C293.286469,166.818863 295.974640,165.747269 297.141937,164.403122 
+	C298.334381,163.030014 299.742737,161.846878 301.012451,160.537781 
+	C303.085388,158.400543 304.690277,158.704544 305.960510,161.458191 
+	C304.845062,163.937866 302.422943,165.316788 300.565857,167.645172 
+z"/><path fill="#0a0a0a" d="M303.845459,176.309265 
+	C302.247955,176.282257 301.094940,176.300140 299.955017,176.186462 
+	C298.879730,176.079224 298.099670,175.490585 298.003265,174.340195 
+	C297.863403,172.670883 298.864838,171.845108 300.361450,171.880341 
+	C302.672852,171.934784 305.621277,170.657639 306.856567,173.697083 
+	C307.610901,175.553238 305.946930,176.190689 303.845459,176.309265 
+z"/><path fill="#0a0a0a" d="M288.505249,162.990906 
+	C288.912628,160.987717 287.872864,158.738968 290.389038,158.058090 
+	C291.462311,157.767670 292.412506,158.298111 292.728485,159.365250 
+	C293.341858,161.436935 294.062622,164.118820 292.591522,165.507065 
+	C290.552155,167.431625 288.657959,166.452576 288.505249,162.990906 
+z"/></svg>
+      <h1>Mail Sniff</h1>
+    </div>
+    <div class="eyebrow"><span class="dot"></span> Free · no API · no keys</div>
+    <p class="sub">Paste domains and get contact emails back in your exact order, with names, designation, a decision-maker's LinkedIn, and a confidence score.</p>
+  </header>
+
+  <section class="panel input-pad">
+    <textarea id="domains" placeholder="example.com&#10;anotherdomain.io&#10;blog.something.co"></textarea>
+    <div class="bar-row">
+      <span class="count" id="count">0 domains</span>
+      <label class="filelbl">Upload .txt / .csv<input type="file" id="file" accept=".txt,.csv"/></label>
+      <button class="btn" id="go">Find emails</button>
+    </div>
+  </section>
+
+  <section class="prog" id="prog">
+    <div class="stats">
+      <div class="stat"><div class="n" id="s-scanned">0</div><div class="l">Scanned</div></div>
+      <div class="stat"><div class="n" id="s-found">0</div><div class="l">Emails found</div></div>
+      <div class="stat muted"><div class="n" id="s-hi">0</div><div class="l">High confidence</div></div>
+      <div class="stat muted"><div class="n" id="s-md">0</div><div class="l">Medium</div></div>
+      <div class="stat muted"><div class="n" id="s-lo">0</div><div class="l">Low</div></div>
+    </div>
+    <div class="track"><i id="barfill"></i></div>
+    <div class="track-lbl"><span id="barstat">Starting</span><span id="barpct">0%</span></div>
+  </section>
+
+  <section class="res" id="resWrap">
+    <div class="res-head">
+      <h2>Results</h2><span class="n" id="resCount"></span>
+      <input class="search" id="search" placeholder="Filter by domain or email"/>
+      <button class="btn-sec" id="copy">Copy table</button>
+      <button class="btn-sec" id="csv">Export CSV</button>
+      <button class="btn-sec" id="xlsx">Export Excel</button>
+    </div>
+    <table class="tbl">
+      <thead><tr><th class="idx">#</th><th>Domain</th><th>Emails found</th><th>Names</th><th>Designation</th><th>LinkedIn</th><th>Confidence</th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </section>
+
+  <p class="foot">Sources: on-page · contact / about / team / legal pages · JSON-LD · security.txt · RSS feeds · Cloudflare-decode · linked PDFs · sitemap · GitHub · Wayback Machine · certificate transparency · social bios · DuckDuckGo · WHOIS. Confidence is syntax + MX record + disposable &amp; role-address checks. Order matches your input exactly.</p>
+</div>
+
+<div id="pet" class="pet idle show" aria-hidden="true">
+  <div class="bubble" id="petbubble">sniffing around · paste domains</div>
+  <svg class="pet-svg" viewBox="108 74 208 132"><g class="char"><g class="dog"><path fill="#0a0a0a" d="M244.407135,144.615631 
+	C245.412216,145.972900 246.097458,147.152969 247.031540,148.083160 
+	C249.171646,150.214401 248.899643,151.941025 246.712341,153.921402 
+	C244.250443,156.150391 242.003799,158.627045 239.756165,161.080826 
+	C233.720459,167.670197 234.890793,174.254089 242.790085,178.440933 
+	C250.893875,182.736160 254.614853,180.526978 254.657578,171.404404 
+	C254.680969,166.409012 254.709152,161.413544 254.776276,156.418655 
+	C254.782425,155.961060 255.088226,155.507507 255.411102,154.625183 
+	C262.173828,154.420013 267.860870,156.770798 271.410004,162.582153 
+	C274.763611,168.073380 279.027527,170.181259 285.442596,169.812943 
+	C292.760895,169.392761 295.308746,173.279739 293.215668,180.336395 
+	C289.744843,192.037979 284.347076,196.083405 272.170105,196.097931 
+	C268.172852,196.102707 264.173126,195.997879 260.178833,196.104584 
+	C250.762283,196.356110 242.951492,193.104080 236.855103,185.825714 
+	C233.861572,182.251846 230.625122,178.876175 227.727158,175.229202 
+	C225.463058,172.379929 222.869675,171.571182 219.054214,172.880798 
+	C225.236145,180.251801 231.235275,187.404831 237.404739,194.760956 
+	C226.752396,198.590317 216.769562,196.161011 210.398819,188.826157 
+	C206.359726,184.175827 202.173065,179.652496 198.005280,175.115677 
+	C196.172287,173.120392 194.486771,171.152939 194.670822,168.161087 
+	C194.826080,165.637665 193.072815,165.198273 191.034515,165.203400 
+	C183.872955,165.221390 176.710312,165.298309 169.550323,165.195679 
+	C166.957382,165.158524 165.688126,166.739334 164.375534,168.503281 
+	C160.699509,173.443329 155.963470,177.111694 150.199554,179.144073 
+	C147.087799,180.241287 146.277084,181.978165 146.263855,185.056152 
+	C146.216171,196.134277 146.119598,196.133789 135.033508,196.097595 
+	C134.367294,196.095413 133.701096,196.097458 133.034882,196.096191 
+	C125.766571,196.082321 125.765800,196.082230 125.753380,188.982407 
+	C125.749008,186.484131 125.894058,183.975647 125.718681,181.489609 
+	C125.308968,175.681427 125.774323,170.466583 130.740967,166.174438 
+	C133.608994,163.695923 134.478683,159.681458 134.703232,155.686203 
+	C135.183578,147.139587 133.060181,138.373627 137.122086,130.094269 
+	C138.308853,127.675270 135.486206,126.804337 134.067566,125.608818 
+	C122.566757,115.916908 118.577568,100.550743 124.117592,86.734100 
+	C124.828835,84.960266 125.302773,82.900093 127.930847,81.700348 
+	C128.192963,84.473206 128.222885,87.042511 128.704773,89.524048 
+	C131.960281,106.288612 145.482819,117.507576 162.638306,117.632019 
+	C175.462173,117.725052 188.291275,117.854233 201.110748,117.599434 
+	C216.881088,117.285988 229.037720,123.848007 238.369690,136.213394 
+	C240.375031,138.870605 242.259933,141.618713 244.407135,144.615631 
+M264.205353,167.142151 
+	C262.564453,168.136017 261.878540,169.531540 262.799805,171.306259 
+	C263.514313,172.682693 264.865784,172.874878 266.238525,172.447083 
+	C267.415588,172.080292 268.381714,171.214432 268.351227,169.977020 
+	C268.297607,167.805679 267.011597,166.728470 264.205353,167.142151 
+z"/><path fill="#0a0a0a" d="M158.602966,188.406967 
+	C157.052628,186.471085 155.145370,185.238251 154.501495,183.077530 
+	C162.187073,175.402817 169.083115,175.474243 175.960373,183.362930 
+	C179.105789,186.970947 182.076294,190.731415 185.765060,195.196030 
+	C180.067459,196.771591 175.109085,195.613907 170.325974,196.174408 
+	C164.230850,196.888672 162.193817,191.878143 158.602966,188.406967 
+z"/><path fill="#0a0a0a" d="M300.565857,167.645172 
+	C298.889862,169.066803 297.665985,171.552216 295.478241,169.187729 
+	C293.286469,166.818863 295.974640,165.747269 297.141937,164.403122 
+	C298.334381,163.030014 299.742737,161.846878 301.012451,160.537781 
+	C303.085388,158.400543 304.690277,158.704544 305.960510,161.458191 
+	C304.845062,163.937866 302.422943,165.316788 300.565857,167.645172 
+z"/><path fill="#0a0a0a" d="M303.845459,176.309265 
+	C302.247955,176.282257 301.094940,176.300140 299.955017,176.186462 
+	C298.879730,176.079224 298.099670,175.490585 298.003265,174.340195 
+	C297.863403,172.670883 298.864838,171.845108 300.361450,171.880341 
+	C302.672852,171.934784 305.621277,170.657639 306.856567,173.697083 
+	C307.610901,175.553238 305.946930,176.190689 303.845459,176.309265 
+z"/><path fill="#0a0a0a" d="M288.505249,162.990906 
+	C288.912628,160.987717 287.872864,158.738968 290.389038,158.058090 
+	C291.462311,157.767670 292.412506,158.298111 292.728485,159.365250 
+	C293.341858,161.436935 294.062622,164.118820 292.591522,165.507065 
+	C290.552155,167.431625 288.657959,166.452576 288.505249,162.990906 
+z"/></g><g class="fx"><path fill="#0a0a0a" d="M170,95 l3,9 9,3 -9,3 -3,9 -3,-9 -9,-3 9,-3 Z"/><path fill="#0a0a0a" d="M242,84 l2.5,7.5 7.5,2.5 -7.5,2.5 -2.5,7.5 -2.5,-7.5 -7.5,-2.5 7.5,-2.5 Z"/><path fill="#0a0a0a" d="M296,104 l2.5,7.5 7.5,2.5 -7.5,2.5 -2.5,7.5 -2.5,-7.5 -7.5,-2.5 7.5,-2.5 Z"/></g></g></svg>
+</div>
+
+<script>
+const $=s=>document.querySelector(s);
+const ta=$("#domains"), countEl=$("#count");
+let jobId=null, timer=null, lastResults=[];
+
+const pet=$("#pet"), petBubble=$("#petbubble");
+let prevFound=0;
+function setPet(state,text){pet.className="pet "+state+" show"; if(text)petBubble.textContent=text;}
+function petReact(n){
+  const el=document.createElement("div"); el.className="pop1"; el.textContent="+"+n;
+  pet.appendChild(el); setTimeout(()=>el.remove(),900);
+  // happy little pounce + fast tail burst on each find
+  // (WAAPI on .char so setPet's className rewrites can't wipe it)
+  const ch=document.querySelector("#pet .char");
+  if(ch&&ch.animate){
+    ch.animate([
+      {transform:"translateY(0) scaleY(1)"},
+      {transform:"translateY(3px) scaleY(.9)",offset:.14},
+      {transform:"translateY(-22px) scaleY(1.08)",offset:.42},
+      {transform:"translateY(0) scaleY(.94)",offset:.72},
+      {transform:"translateY(0) scaleY(1)"}
+    ],{duration:620,easing:"cubic-bezier(.3,1.3,.5,1)"});
+  }
+  const tl=document.querySelector("#pet .tail");
+  if(tl&&tl.animate){
+    tl.animate([
+      {transform:"rotate(-14deg)"},{transform:"rotate(22deg)"},{transform:"rotate(-10deg)"},
+      {transform:"rotate(20deg)"},{transform:"rotate(-8deg)"},{transform:"rotate(0deg)"}
+    ],{duration:620,easing:"ease-in-out"});
+  }
+}
+function copyTable(){
+  if(!lastResults.length)return;
+  const head=["Domain","Emails","Names","Designation","LinkedIn","Confidence"];
+  const CL={high:"High",medium:"Medium",low:"Low"};
+  const rows=lastResults.map(r=>{
+    const emails=(r.emails&&r.emails.length)?r.emails.map(e=>e.email).join(", "):"email not found";
+    const li=(r.linkedin&&r.linkedin.url)?r.linkedin.url:"";
+    return [r.domain,emails,(r.names||[]).join(", "),(r.designations||[]).join(", "),li,(CL[r.confidence]||"Not found")].join("\t");
+  });
+  const tsv=[head.join("\t"),...rows].join("\n");
+  const done=()=>{const b=$("#copy"); b.textContent="Copied ✓"; setTimeout(()=>b.textContent="Copy table",1500);};
+  const fallback=()=>{const t=document.createElement("textarea");t.value=tsv;t.style.position="fixed";t.style.opacity="0";
+    document.body.appendChild(t);t.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(t);done();};
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(tsv).then(done).catch(fallback);
+  }else fallback();
+}
+
+function domainList(){return ta.value.split(/[\n,]+/).map(s=>s.trim()).filter(Boolean);}
+function updateCount(){const n=domainList().length;countEl.innerHTML=`<b>${n}</b> domain${n===1?"":"s"}`;}
+ta.addEventListener("input",updateCount);
+
+$("#file").addEventListener("change",e=>{
+  const f=e.target.files[0]; if(!f)return;
+  const r=new FileReader();
+  r.onload=()=>{
+    const lines=r.result.split(/\r?\n/).map(l=>l.split(",")[0].trim()).filter(Boolean);
+    if(lines.length && !/\./.test(lines[0])) lines.shift();
+    ta.value=lines.join("\n"); updateCount();
+  };
+  r.readAsText(f);
+});
+
+function animateNum(el,to){
+  const from=parseInt(el.textContent)||0; if(from===to)return;
+  const step=Math.max(1,Math.ceil(Math.abs(to-from)/12)); let cur=from;
+  const t=setInterval(()=>{cur+=(to>cur?step:-step); if(cur>=to&&step>0||cur<=to&&step<0){cur=to;clearInterval(t);} el.textContent=cur;},28);
+}
+
+async function start(){
+  const domains=domainList(); if(!domains.length){ta.focus();return;}
+  $("#go").disabled=true; $("#go").textContent="Searching";
+  $("#prog").classList.add("on"); $("#resWrap").classList.add("on");
+  setPet("busy","on the scent…");
+  const res=await fetch("/api/find",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({domains})});
+  jobId=(await res.json()).job_id; prevFound=0;
+  poll(); timer=setInterval(poll,800);
+}
+
+async function poll(){
+  if(!jobId)return;
+  const j=await (await fetch("/api/job/"+jobId)).json();
+  lastResults=j.results;
+  if(j.found>prevFound){petReact(j.found-prevFound);} prevFound=j.found;
+  animateNum($("#s-scanned"),j.done); animateNum($("#s-found"),j.found);
+  animateNum($("#s-hi"),j.counts.high); animateNum($("#s-md"),j.counts.medium); animateNum($("#s-lo"),j.counts.low);
+  const pct=j.total?Math.round(j.done/j.total*100):0;
+  $("#barfill").style.width=pct+"%"; $("#barpct").textContent=pct+"%";
+  $("#barstat").innerHTML=j.running
+    ? `<span class="live"><span class="pd"></span>Searching ${j.done} of ${j.total}</span>`
+    : `Done · ${j.found} of ${j.total} domains have an email`;
+  $("#resCount").textContent=j.total?`${j.found} of ${j.total} found`:"";
+  render();
+  if(j.running){
+    setPet("busy",`sniffing ${j.done} of ${j.total}… found ${j.found}`);
+  }else{
+    clearInterval(timer);$("#go").disabled=false;$("#go").textContent="Find emails";
+    setPet(j.found ? "done" : "done sad", j.found ? `all sniffed out · ${j.found} of ${j.total}!` : "no emails this time…");
+  }
+}
+
+function esc(s){return (s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
+function render(){
+  const filter=$("#search").value.trim().toLowerCase();
+  $("#tbody").innerHTML=lastResults.map((r,i)=>{
+    const hay=(r.domain+" "+(r.emails||[]).map(e=>e.email).join(" ")).toLowerCase();
+    if(filter && !hay.includes(filter))return "";
+    const pending=r.found===null;
+    let emailsHtml;
+    if(pending) emailsHtml=`<span class="sk"></span>`;
+    else if(r.emails&&r.emails.length) emailsHtml=`<div class="emails">`+r.emails.map(e=>
+        `<div class="em">${esc(e.email)}</div>`).join("")+`</div>`;
+    else emailsHtml=`<span class="notfound">email not found</span>`;
+    const names=(r.names&&r.names.length)?esc(r.names.join(", ")):`<span class="none">-</span>`;
+    const desig=(r.designations&&r.designations.length)?esc(r.designations.join(", ")):`<span class="none">-</span>`;
+    let li=`<span class="none">-</span>`;
+    if(r.linkedin&&r.linkedin.url){
+      const who=[r.linkedin.name,r.linkedin.role].filter(Boolean).join(" · ");
+      li=`<a href="${esc(r.linkedin.url)}" target="_blank" rel="noopener">in/${esc((r.linkedin.url.split('/in/')[1]||r.linkedin.url.split('/company/')[1]||'profile'))}</a>${who?`<span class="who">${esc(who)}</span>`:""}${r.linkedin.guess?`<span class="guess">search guess</span>`:""}`;
+    }
+    const conf=pending?"pending":(r.confidence||"none");
+    const confLabel={high:"High",medium:"Medium",low:"Low",none:"Not found",pending:"…"}[conf];
+    return `<tr class="${pending?'pending':''}" style="animation-delay:${Math.min(i*22,320)}ms">
+      <td class="idx">${i+1}</td>
+      <td><span class="dom">${esc(r.domain)}</span>${r.normalized&&r.normalized!==r.domain?`<span class="norm">${esc(r.normalized)}</span>`:""}</td>
+      <td>${emailsHtml}</td>
+      <td class="mut">${names}</td>
+      <td class="mut">${desig}</td>
+      <td class="li-cell">${li}</td>
+      <td><span class="conf ${conf}">${confLabel}</span></td></tr>`;
+  }).join("");
+}
+
+$("#search").addEventListener("input",render);
+$("#go").addEventListener("click",start);
+$("#copy").addEventListener("click",copyTable);
+$("#csv").addEventListener("click",()=>jobId&&(location.href="/api/job/"+jobId+"/export.csv"));
+$("#xlsx").addEventListener("click",()=>jobId&&(location.href="/api/job/"+jobId+"/export.xlsx"));
+ta.addEventListener("keydown",e=>{if((e.metaKey||e.ctrlKey)&&e.key==="Enter")start();});
+updateCount();
+</script>
+</body>
+</html>

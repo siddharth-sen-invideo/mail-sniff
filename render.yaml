@@ -1,0 +1,9 @@
+# Render Blueprint - one-click deploy of Mail Sniff as a free always-on web service.
+# On render.com: New + -> Blueprint -> pick this repo. Render reads this file.
+services:
+  - type: web
+    name: mail-sniff
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    autoDeploy: true
