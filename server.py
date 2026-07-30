@@ -146,7 +146,7 @@ def _flatten(job: dict):
         else:
             email_cell = "email not found"
             conf = "Not found"
-            detail = ""
+            detail = r.get("note") or ""
         rows.append([r["domain"], people_cell, email_cell, names_cell, desig_cell,
                      li_cell, conf, detail])
     return rows

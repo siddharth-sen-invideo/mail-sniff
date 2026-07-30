@@ -150,7 +150,7 @@ AUTHORITY_RANK = [
 ]
 LI_SKIP_SLUGS = {"company", "school", "jobs", "feed", "pub", "shareArticle", "sharing",
                  "login", "signup", "cws", "learning", "posts"}
-MAX_EMAILS_PER_DOMAIN = 6
+MAX_EMAILS_PER_DOMAIN = 25   # was 6, which silently hid real addresses
 PER_DOMAIN_BUDGET = 50  # seconds; bot-walled domains can't stall the whole batch
 MAX_PEOPLE_PER_DOMAIN = 8
 MAX_PAGE_FETCHES = 48
@@ -434,7 +434,16 @@ def _whois_lookup(domain: str) -> tuple[list[str], str | None]:
 
 
 CF_CHALLENGE = ("just a moment", "cf-chl-", "challenge-platform", "cf-browser-verification",
-                "enable javascript and cookies", "attention required | cloudflare")
+                "enable javascript and cookies", "attention required | cloudflare",
+                "jschallenge", "checking your browser", "verifying you are human")
+
+
+def _is_challenge(body: str) -> bool:
+    """A bot-challenge interstitial pretending to be the site."""
+    if not body:
+        return False
+    low = body[:6000].lower()
+    return any(m in low for m in CF_CHALLENGE)
 
 
 async def _curl(url: str):
@@ -574,6 +583,44 @@ async def _github_emails(client, users):
                             found.setdefault(v, "GitHub commits")
         except Exception:
             continue
+    return found
+
+
+SCRIPT_SRC_RE = re.compile(r'<script[^>]+src=["\']([^"\']+\.js[^"\']*)["\']', re.I)
+
+
+async def _js_bundle_emails(client, pages, domain, left):
+    """A JS app serves the same shell for every route and keeps the contact
+    address in a script chunk. Without this, those sites look email-free."""
+    found: dict[str, str] = {}
+    srcs, seen = [], set()
+    bare = domain.replace("www.", "")
+    for url, html in pages:
+        for m in SCRIPT_SRC_RE.findall(html):
+            try:
+                u = urljoin(url, m)
+            except Exception:
+                continue
+            host = urlparse(u).netloc.replace("www.", "")
+            if host and host != bare and not host.endswith("." + bare):
+                continue                      # same-site bundles only
+            if u not in seen:
+                seen.add(u)
+                srcs.append(u)
+    for u in srcs[:8]:
+        if left() < 8:
+            break
+        try:
+            r = await client.get(u, timeout=httpx.Timeout(10.0))
+            if r.status_code != 200:
+                continue
+            body = r.text[:900000]
+        except Exception:
+            continue
+        for e in find_emails(body):
+            found.setdefault(e, "JS bundle")
+        for e in find_cfemails(body):
+            found.setdefault(e, "obfuscated (decoded)")
     return found
 
 
@@ -909,6 +956,11 @@ async def process_domain(client: httpx.AsyncClient, raw_domain: str) -> dict:
                     emails.setdefault(e, "RSS feed")
             if emails:
                 break
+    # JS-app fallback: the address lives in a script chunk, not the markup
+    if not _has_personal(emails) and left() > 12:
+        for e, src in (await _js_bundle_emails(client, pages, domain, left)).items():
+            emails.setdefault(e, src)
+
     if not _has_personal(emails) and gh_users and left() > 8:
         for e, src in (await _github_emails(client, gh_users)).items():
             emails.setdefault(e, src)
@@ -1133,6 +1185,14 @@ async def process_domain(client: httpx.AsyncClient, raw_domain: str) -> dict:
         guess = await _linkedin_via_ddg(client, brand, domain)
         if guess:
             linkedin = guess
+
+    if not out_emails and not people:
+        if not home:
+            result["note"] = "site unreachable"
+        elif pages and all(_is_challenge(h) for _, h in pages):
+            result["note"] = "blocked by a bot challenge (needs a real browser)"
+        else:
+            result["note"] = "no email published on the site"
 
     result["emails"] = out_emails
     result["names"] = sorted(names)[:4]
