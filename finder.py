@@ -153,6 +153,7 @@ LI_SKIP_SLUGS = {"company", "school", "jobs", "feed", "pub", "shareArticle", "sh
 MAX_EMAILS_PER_DOMAIN = 6
 PER_DOMAIN_BUDGET = 50  # seconds; bot-walled domains can't stall the whole batch
 MAX_PEOPLE_PER_DOMAIN = 8
+MAX_PAGE_FETCHES = 48
 
 _mx_cache: dict[str, bool] = {}
 
@@ -204,6 +205,34 @@ def find_emails(text: str) -> set[str]:
         v = _valid_email(m)
         if v:
             out.add(v)
+    return out
+
+
+_OB_LOCAL = r"[A-Za-z0-9._%+\-]{2,64}"
+_OB_DOM = r"[A-Za-z0-9\-]{2,63}"
+_OB_TLD = r"[A-Za-z]{2,12}"
+_OB_AT_MARKED = (r"(?:\[\s*(?:at|@)\s*\]|\(\s*(?:at|@)\s*\)|\{\s*(?:at|@)\s*\}"
+                 r"|&#0?64;|%40|\s+@\s+)")
+_OB_DOT_ANY = (r"(?:\[\s*(?:dot|\.)\s*\]|\(\s*(?:dot|\.)\s*\)"
+               r"|\{\s*(?:dot|\.)\s*\}|\s+dot\s+|\.)")
+_OB_DOT_MARKED = (r"(?:\[\s*(?:dot|\.)\s*\]|\(\s*(?:dot|\.)\s*\)"
+                  r"|\{\s*(?:dot|\.)\s*\}|\s+dot\s+)")
+# marked "at" allows any dot form; a plainly spelled " at " demands a spelled dot,
+# otherwise prose like "available at example.com" would become an address.
+OBFUS_RES = [
+    re.compile(rf"({_OB_LOCAL})\s*{_OB_AT_MARKED}\s*({_OB_DOM})\s*{_OB_DOT_ANY}\s*({_OB_TLD})", re.I),
+    re.compile(rf"({_OB_LOCAL})\s+at\s+({_OB_DOM})\s*{_OB_DOT_MARKED}\s*({_OB_TLD})", re.I),
+]
+
+
+def find_obfuscated_emails(text: str) -> set[str]:
+    """Catch 'hello [at] site [dot] com' and &#64; forms that plain regex misses."""
+    out: set[str] = set()
+    for rx in OBFUS_RES:
+        for loc, dom, tld in rx.findall(text or ""):
+            v = _valid_email(f"{loc}@{dom}.{tld}")
+            if v:
+                out.add(v)
     return out
 
 
@@ -464,7 +493,7 @@ def _discover_links(html: str, base: str) -> list[str]:
             if u not in seen:
                 seen.add(u)
                 out.append(u)
-    return out[:10]
+    return out[:18]
 
 
 def _collect_socials(html: str) -> list[str]:
@@ -794,21 +823,27 @@ async def process_domain(client: httpx.AsyncClient, raw_domain: str) -> dict:
 
     if home:
         pages.append((base, home))
-        # deterministic, priority order (known important paths first, then discovered);
-        # never let a set() reorder drop /privacy-policy etc.
+        # REAL links found in the page come first (they are known to exist), then the
+        # guessed paths. Nothing is truncated: a [:26] cap here was silently dropping
+        # security.txt, humans.txt, /blog, /careers AND every discovered link.
         urls, seen_u = [], set()
-        for p in CANDIDATE_PATHS:
-            u = urljoin(base, "/" + p)
-            if u not in seen_u:
-                seen_u.add(u)
-                urls.append(u)
         for u in _discover_links(home, base):
             if u not in seen_u:
                 seen_u.add(u)
                 urls.append(u)
-        for (fu, fh) in await asyncio.gather(*[_fetch(client, u) for u in urls[:26]]):
-            if fh:
-                pages.append((fu, fh))
+        for pth in CANDIDATE_PATHS:
+            u = urljoin(base, "/" + pth)
+            if u not in seen_u:
+                seen_u.add(u)
+                urls.append(u)
+        # in waves, so a single host is not hit with 50 sockets at once
+        for i in range(0, min(len(urls), MAX_PAGE_FETCHES), 16):
+            if left() < 14:
+                break
+            wave = urls[i:i + 16]
+            for (fu, fh) in await asyncio.gather(*[_fetch(client, u) for u in wave]):
+                if fh:
+                    pages.append((fu, fh))
 
     for url, html in pages:
         src = _source_label(url)
@@ -816,6 +851,9 @@ async def process_domain(client: httpx.AsyncClient, raw_domain: str) -> dict:
             emails.setdefault(e, src)
         for e in find_cfemails(html):
             emails.setdefault(e, "obfuscated (decoded)")
+        vis = _visible_text(html)
+        for e in find_obfuscated_emails(vis):
+            emails.setdefault(e, "obfuscated text")
         je, jt = find_jsonld(html)
         for e, d in je.items():
             emails.setdefault(e, "structured data")
@@ -863,7 +901,7 @@ async def process_domain(client: httpx.AsyncClient, raw_domain: str) -> dict:
                     text_blobs.append(_visible_text(fh))
 
     # Full fallback chain: only when nothing at all has turned up yet.
-    if not emails and base:
+    if not _has_personal(emails) and base:
         for fp in FEED_PATHS:
             _, fh = await _fetch(client, urljoin(base, "/" + fp))
             if fh:
@@ -871,7 +909,7 @@ async def process_domain(client: httpx.AsyncClient, raw_domain: str) -> dict:
                     emails.setdefault(e, "RSS feed")
             if emails:
                 break
-    if not emails and gh_users and left() > 8:
+    if not _has_personal(emails) and gh_users and left() > 8:
         for e, src in (await _github_emails(client, gh_users)).items():
             emails.setdefault(e, src)
     if not emails and left() > 8:
@@ -880,10 +918,10 @@ async def process_domain(client: httpx.AsyncClient, raw_domain: str) -> dict:
     if not emails and left() > 10:
         for e, src in (await _crtsh_scan(client, domain)).items():
             emails.setdefault(e, src)
-    if not emails and socials and left() > 5:
+    if not _has_personal(emails) and socials and left() > 5:
         for e, src in (await _social_bios(client, socials)).items():
             emails.setdefault(e, src)
-    if not emails and left() > 5:
+    if not _has_personal(emails) and left() > 5:
         for e, src in (await _ddg(client, domain)).items():
             emails.setdefault(e, src)
     if not emails and left() > 6:

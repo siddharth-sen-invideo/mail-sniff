@@ -49,8 +49,13 @@ def _parse_domains(payload: FindIn) -> list[str]:
 async def _run_job(job_id: str, domains: list[str]):
     job = JOBS[job_id]
     sem = asyncio.Semaphore(DOMAIN_CONCURRENCY)
-    limits = httpx.Limits(max_connections=40, max_keepalive_connections=20)
-    timeout = httpx.Timeout(9.0, connect=6.0)
+    # Each domain fires up to ~16 page fetches at once. With DOMAIN_CONCURRENCY
+    # domains in flight that is far past the old 40-connection ceiling, so fetches
+    # queued until they timed out: batches silently lost emails that single-domain
+    # runs found. Size the pool to the real concurrency instead.
+    limits = httpx.Limits(max_connections=DOMAIN_CONCURRENCY * 20,
+                          max_keepalive_connections=DOMAIN_CONCURRENCY * 6)
+    timeout = httpx.Timeout(12.0, connect=8.0)
     async with httpx.AsyncClient(headers={"User-Agent": finder.UA}, follow_redirects=True,
                                  timeout=timeout, verify=False, limits=limits) as client:
         async def one(idx: int, dom: str):
