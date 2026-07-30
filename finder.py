@@ -1123,7 +1123,7 @@ async def process_domain(client: httpx.AsyncClient, raw_domain: str) -> dict:
             if not nm:
                 continue
             people.append({"name": nm, "title": cand.get(nm, ""), "email": email,
-                           "status": "confirmed", "source": src,
+                           "status": "scraped", "source": f"found on the {src}",
                            "rank": P.role_rank(cand.get(nm, ""))})
             seen_emails.add(email)
 
@@ -1151,18 +1151,20 @@ async def process_domain(client: httpx.AsyncClient, raw_domain: str) -> dict:
             mx_ok = _has_mailserver(domain)
             for e, pn, n, t in generated:
                 if e in hits:
-                    status, why = "confirmed", "found in public search results"
+                    status, why = "verified", "generated, then found in public search results"
                 elif e in grav:
-                    status, why = "confirmed", "registered Gravatar account"
+                    status, why = "verified", "generated, confirmed by a Gravatar account"
                 elif pattern and pn == pattern and mx_ok:
-                    status, why = "likely", f"matches this domain's {pn} pattern"
+                    status, why = "likely", f"guessed from this domain's {pn} pattern"
                 else:
-                    status, why = "guess", f"{pn} pattern, unverified"
+                    status, why = "guess", f"guessed, {pn} pattern, unverified"
                 people.append({"name": n, "title": t, "email": e, "status": status,
                                "source": why, "rank": P.role_rank(t)})
 
-        _ORDER = {"confirmed": 0, "likely": 1, "guess": 2}
-        people.sort(key=lambda p: (p["rank"], _ORDER.get(p["status"], 3),
+        # authentic first: scraped off the site, then verified, then guesses.
+        # role seniority only orders people INSIDE the same tier.
+        _ORDER = {"scraped": 0, "verified": 1, "likely": 2, "guess": 3}
+        people.sort(key=lambda p: (_ORDER.get(p["status"], 4), p["rank"],
                                    len(p["email"]), p["email"]))
         # one row per human: keep their best-verified address
         deduped, seen_names = [], set()

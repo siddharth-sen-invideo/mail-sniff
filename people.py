@@ -62,6 +62,9 @@ _NAME_STOP = {
     "must", "agree", "agrees", "acknowledge", "including", "without", "with", "such",
     "any", "each", "either", "neither", "if", "or", "to", "and", "not", "no", "hereby",
     "herein", "thereof", "pursuant", "applicable", "reasonable", "material",
+    # byline trailers ("By Seb Antoniou Published 3 min read")
+    "published", "reading", "min", "mins", "minute", "minutes", "comments",
+    "comment", "reply", "replies", "share", "tags", "category", "categories",
 }
 
 # free HTML search endpoints, rotated (each rate-limits independently).
@@ -187,6 +190,11 @@ def looks_like_person_name(s):
         if len(q) > 2 and q.isupper():   # ALL-CAPS legal headings are not names
             return None
         clean.append(q)
+    folded = [_ascii_fold(c) for c in clean]
+    if len(set(folded)) != len(folded):       # a token repeats: mis-parsed byline
+        return None
+    if any(len(f) < 2 for f in folded):
+        return None
     return " ".join(clean)
 
 
@@ -220,12 +228,22 @@ def match_local_to_name(local, names):
     return None
 
 
+def _ascii_fold(s):
+    """Titi -> titi, not 'i'. Dropping non-ASCII chars produced junk locals."""
+    import unicodedata
+    s = unicodedata.normalize("NFKD", s or "")
+    return re.sub(r"[^a-z]", "", "".join(c for c in s if not unicodedata.combining(c)).lower())
+
+
 def split_name(name):
-    parts = [re.sub(r"[^a-z]", "", p.lower()) for p in (name or "").split()]
-    parts = [p for p in parts if p]
+    parts = [_ascii_fold(p) for p in (name or "").split()]
+    parts = [p for p in parts if len(p) >= 2]
     if len(parts) < 2:
         return None
-    return parts[0], parts[-1]
+    first, last = parts[0], parts[-1]
+    if first == last:          # "Constance Tan Constance" -> junk
+        return None
+    return first, last
 
 
 def role_rank(title):
