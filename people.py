@@ -65,6 +65,13 @@ _NAME_STOP = {
     # byline trailers ("By Seb Antoniou Published 3 min read")
     "published", "reading", "min", "mins", "minute", "minutes", "comments",
     "comment", "reply", "replies", "share", "tags", "category", "categories",
+    # company-name tokens: client lists read as "names" otherwise
+    # ("Biscuit Filmworks", "Bear Meets Eagle")
+    "films", "filmworks", "pictures", "productions", "production", "studios",
+    "studio", "works", "collective", "labs", "lab", "agency", "ventures",
+    "partners", "creative", "creatives", "meets", "presents", "featuring",
+    "entertainment", "industries", "enterprises", "holdings", "associates",
+    "consulting", "systems", "technologies", "software", "digital",
 }
 
 # free HTML search endpoints, rotated (each rate-limits independently).

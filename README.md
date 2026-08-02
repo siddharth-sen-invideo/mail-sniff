@@ -41,6 +41,15 @@ Per email: syntax + **MX record** (can the domain receive mail?) + disposable-do
 > SMTP probing (blocked on most hosts, useless for Gmail, and risks IP blacklisting). The real
 > final check is simply sending and watching for bounces.
 
+## Use it from another tool (MCP)
+
+Mail Sniff ships an MCP server so other tools can call it directly.
+See **[MCP.md](MCP.md)**, or add it to Claude Code with:
+
+```bash
+claude mcp add mail-sniff -- "$(pwd)/mcp_run.sh"
+```
+
 ## Files
 
 | File | Purpose |
