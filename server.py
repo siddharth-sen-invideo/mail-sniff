@@ -21,7 +21,7 @@ HERE = Path(__file__).parent
 app.mount("/fonts", StaticFiles(directory=str(HERE / "fonts")), name="fonts")
 app.mount("/assets", StaticFiles(directory=str(HERE / "assets")), name="assets")
 MAX_DOMAINS = 500
-DOMAIN_CONCURRENCY = 10
+DOMAIN_CONCURRENCY = 5   # fewer at once finish faster and inside budget
 
 # in-memory job store
 JOBS: dict[str, dict] = {}
@@ -55,14 +55,19 @@ async def _run_job(job_id: str, domains: list[str]):
     # runs found. Size the pool to the real concurrency instead.
     limits = httpx.Limits(max_connections=DOMAIN_CONCURRENCY * 20,
                           max_keepalive_connections=DOMAIN_CONCURRENCY * 6)
-    timeout = httpx.Timeout(12.0, connect=8.0)
+    # big pages (300KB+) need a generous READ timeout under concurrency;
+    # at 12s they failed silently and the site looked email-free
+    timeout = httpx.Timeout(18.0, connect=8.0)
     async with httpx.AsyncClient(headers={"User-Agent": finder.UA}, follow_redirects=True,
                                  timeout=timeout, verify=False, limits=limits) as client:
         async def one(idx: int, dom: str):
             async with sem:
                 try:
                     # hard ceiling so a bot-walled domain can't stall the batch
-                    res = await asyncio.wait_for(finder.process_domain(client, dom), timeout=65)
+                    # generous: process_domain self-limits to PER_DOMAIN_BUDGET and
+                    # returns partial results, so this only catches a true hang
+                    res = await asyncio.wait_for(finder.process_domain(client, dom),
+                                                 timeout=110)
                 except asyncio.TimeoutError:
                     res = {"domain": dom, "normalized": finder.normalize_domain(dom),
                            "emails": [], "names": [], "found": False, "note": "timed out"}

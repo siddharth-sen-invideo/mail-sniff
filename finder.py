@@ -68,6 +68,11 @@ CANDIDATE_PATHS = [
     "blog", "news", "articles", "insights", "resources",
     ".well-known/security.txt", "humans.txt",
 ]
+# highest-yield pages for contact details, fetched before anything else
+CRITICAL_PATHS = [
+    "contact", "contact-us", "about", "about-us", "privacy-policy", "privacy",
+    "terms", "legal", "imprint", "impressum", ".well-known/security.txt",
+]
 FEED_PATHS = ["feed", "rss", "rss.xml", "atom.xml", "feed.xml", "index.xml", "blog/feed"]
 LINK_KEYWORDS = ("contact", "about", "privacy", "terms", "legal", "impressum", "imprint",
                  "cookie", "team", "staff", "people", "author", "masthead", "write-for-us",
@@ -151,9 +156,9 @@ AUTHORITY_RANK = [
 LI_SKIP_SLUGS = {"company", "school", "jobs", "feed", "pub", "shareArticle", "sharing",
                  "login", "signup", "cws", "learning", "posts"}
 MAX_EMAILS_PER_DOMAIN = 25   # was 6, which silently hid real addresses
-PER_DOMAIN_BUDGET = 50  # seconds; bot-walled domains can't stall the whole batch
+PER_DOMAIN_BUDGET = 55  # seconds; bot-walled domains can't stall the whole batch
 MAX_PEOPLE_PER_DOMAIN = 8
-MAX_PAGE_FETCHES = 48
+MAX_PAGE_FETCHES = 70
 
 _mx_cache: dict[str, bool] = {}
 
@@ -450,9 +455,9 @@ async def _curl(url: str):
     proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
-            "curl", "-sL", "--compressed", "--max-time", "8", "-A", UA, url,
+            "curl", "-sL", "--compressed", "--max-time", "15", "-A", UA, url,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=9)
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=17)
         txt = out.decode("utf-8", "ignore")
         return txt[:700000] if txt.strip() else None
     except Exception:
@@ -503,6 +508,64 @@ def _discover_links(html: str, base: str) -> list[str]:
                 seen.add(u)
                 out.append(u)
     return out[:18]
+
+
+_LINK_NOISE = re.compile(
+    r"/(?:tag|tags|category|categories|page|search|cart|checkout|login|signin|signup"
+    r"|register|account|wp-|feed|comment|share|print|amp)(?:/|$|\?)", re.I)
+
+
+def _same_site_links(html: str, base: str, domain: str, cap: int = 24) -> list[str]:
+    """Every internal page link, keyword or not. Contact details routinely live on
+    oddly named pages (/app-disclaimer, /reach-us, /kontakt) that no guess list
+    would ever contain, so relying on keywords alone loses them."""
+    bare = domain.replace("www.", "")
+    out, seen = [], set()
+    for href in HREF_RE.findall(html or ""):
+        h = href.strip()
+        if not h or h.startswith(("mailto:", "tel:", "#", "javascript:", "data:")):
+            continue
+        try:
+            u = urljoin(base, h.split("#")[0])
+        except Exception:
+            continue
+        pr = urlparse(u)
+        if pr.scheme not in ("http", "https"):
+            continue
+        host = pr.netloc.replace("www.", "")
+        if host != bare and not host.endswith("." + bare):
+            continue
+        if pr.path.lower().endswith(IMG_EXT) or _LINK_NOISE.search(pr.path):
+            continue
+        if len(pr.path.strip("/").split("/")) > 3:      # deep archives rarely help
+            continue
+        u = u.rstrip("/") or u
+        if u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out[:cap]
+
+
+async def _sitemap_matching(client, base, kws, cap=12):
+    """Real page URLs from sitemap.xml whose slug hints at contact details."""
+    hits, seen = [], set()
+    for sm in ("/sitemap.xml", "/sitemap_index.xml", "/sitemap-index.xml", "/sitemap.txt"):
+        _, txt = await _fetch(client, urljoin(base, sm))
+        if not txt:
+            continue
+        locs = re.findall(r"<loc>\s*([^<]+?)\s*</loc>", txt) or [
+            l.strip() for l in txt.splitlines() if l.strip().startswith("http")]
+        for child in [u for u in locs if u.endswith(".xml")][:3]:
+            _, ct = await _fetch(client, child)
+            if ct:
+                locs += re.findall(r"<loc>\s*([^<]+?)\s*</loc>", ct)
+        for u in locs:
+            if any(k in u.lower() for k in kws) and u not in seen:
+                seen.add(u)
+                hits.append(u)
+        if hits:
+            break
+    return hits[:cap]
 
 
 def _collect_socials(html: str) -> list[str]:
@@ -874,6 +937,14 @@ async def process_domain(client: httpx.AsyncClient, raw_domain: str) -> dict:
         # guessed paths. Nothing is truncated: a [:26] cap here was silently dropping
         # security.txt, humans.txt, /blog, /careers AND every discovered link.
         urls, seen_u = [], set()
+        # The pages that actually hold contact details go FIRST, always. Putting
+        # discovered links ahead of them pushed /contact and /privacy-policy into
+        # a later wave, which never ran on slow or bot-walled sites.
+        for pth in CRITICAL_PATHS:
+            u = urljoin(base, "/" + pth)
+            if u not in seen_u:
+                seen_u.add(u)
+                urls.append(u)
         for u in _discover_links(home, base):
             if u not in seen_u:
                 seen_u.add(u)
@@ -883,12 +954,34 @@ async def process_domain(client: httpx.AsyncClient, raw_domain: str) -> dict:
             if u not in seen_u:
                 seen_u.add(u)
                 urls.append(u)
-        # in waves, so a single host is not hit with 50 sockets at once
-        for i in range(0, min(len(urls), MAX_PAGE_FETCHES), 16):
-            if left() < 14:
+        # then every other internal page the homepage links to (footers hide
+        # contact details on pages no guess list would ever name)
+        for u in _same_site_links(home, base, domain):
+            if u not in seen_u:
+                seen_u.add(u)
+                urls.append(u)
+        # A bot-challenge shell serves the same page for every URL, so crawling it
+        # burns the whole budget and the domain times out with nothing. Probe a
+        # couple of pages only, then let the fallbacks have the time.
+        if _is_challenge(home):
+            urls = urls[:4]
+        # In waves, so one host is not hit with 50 sockets at once. Each wave is
+        # HARD-BOUNDED in time and keeps whatever finished: an unbounded gather
+        # could overshoot the budget and lose the entire domain to a timeout.
+        for i in range(0, min(len(urls), MAX_PAGE_FETCHES), 12):
+            if left() < 15:
                 break
-            wave = urls[i:i + 16]
-            for (fu, fh) in await asyncio.gather(*[_fetch(client, u) for u in wave]):
+            wave = urls[i:i + 12]
+            tasks = [asyncio.ensure_future(_fetch(client, u)) for u in wave]
+            done, pending = await asyncio.wait(
+                tasks, timeout=max(6.0, min(30.0, left() - 12)))
+            for tk in pending:
+                tk.cancel()
+            for tk in done:
+                try:
+                    fu, fh = tk.result()
+                except Exception:
+                    continue
                 if fh:
                     pages.append((fu, fh))
 
@@ -956,6 +1049,23 @@ async def process_domain(client: httpx.AsyncClient, raw_domain: str) -> dict:
                     emails.setdefault(e, "RSS feed")
             if emails:
                 break
+    # sitemap fallback: find the real contact-ish page names we could not guess
+    if not emails and base and left() > 16:
+        kws = ("contact", "about", "legal", "privacy", "terms", "disclaimer",
+               "imprint", "impressum", "support", "help", "team", "reach",
+               "connect", "enquir", "inquir")
+        sm_urls = await _sitemap_matching(client, base, kws)
+        for (fu, fh) in await asyncio.gather(*[_fetch(client, u) for u in sm_urls[:12]]):
+            if not fh:
+                continue
+            src = _source_label(fu)
+            for e in find_emails(fh):
+                emails.setdefault(e, src)
+            for e in find_cfemails(fh):
+                emails.setdefault(e, "obfuscated (decoded)")
+            for e in find_obfuscated_emails(_visible_text(fh)):
+                emails.setdefault(e, "obfuscated text")
+
     # JS-app fallback: the address lives in a script chunk, not the markup
     if not _has_personal(emails) and left() > 12:
         for e, src in (await _js_bundle_emails(client, pages, domain, left)).items():
@@ -1021,7 +1131,11 @@ async def process_domain(client: httpx.AsyncClient, raw_domain: str) -> dict:
     # names+titles from free sources -> infer the domain's pattern -> generate
     # -> verify for free. Every row labelled confirmed / likely / guess.
     people: list[dict] = []
+    # emails come first: only enrich with people when real headroom remains,
+    # otherwise an overshoot here loses the whole domain to a timeout
     try:
+        if left() < 22:
+            raise TimeoutError('no budget for the people pass')
         brand = domain.split(".")[0]
         cand: dict[str, str] = {}        # name -> title
         for n in person_names:

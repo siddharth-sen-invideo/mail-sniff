@@ -32,8 +32,8 @@ SUPPORTED_PROTOCOLS = {"2024-11-05", "2025-03-26", "2025-06-18"}
 SERVER_INFO = {"name": "mail-sniff", "version": "1.0.0"}
 
 MAX_DOMAINS = 50
-CONCURRENCY = 6
-PER_DOMAIN_TIMEOUT = 70
+CONCURRENCY = 5
+PER_DOMAIN_TIMEOUT = 110
 
 TOOLS = [
     {
@@ -123,7 +123,7 @@ async def _run_domains(domains):
     sem = asyncio.Semaphore(CONCURRENCY)
     limits = httpx.Limits(max_connections=CONCURRENCY * 20,
                           max_keepalive_connections=CONCURRENCY * 6)
-    timeout = httpx.Timeout(12.0, connect=8.0)
+    timeout = httpx.Timeout(18.0, connect=8.0)
     out = [None] * len(domains)
     async with httpx.AsyncClient(headers={"User-Agent": finder.UA}, follow_redirects=True,
                                  timeout=timeout, verify=False, limits=limits) as client:

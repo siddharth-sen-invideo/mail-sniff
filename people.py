@@ -100,7 +100,7 @@ _CHALLENGE = ("anomaly", "unusual traffic", "captcha", "are you a robot",
 async def _curl_serp(url, q, method):
     """System curl has a different TLS fingerprint and often clears these walls."""
     import asyncio as _a
-    args = ["curl", "-sL", "--compressed", "--max-time", "10",
+    args = ["curl", "-sL", "--compressed", "--max-time", "8",
             "-A", _SERP_HEADERS["User-Agent"], "-H", "Accept-Language: en-US,en;q=0.9"]
     if method == "post":
         args += ["--data-urlencode", f"q={q}", url]
@@ -110,7 +110,7 @@ async def _curl_serp(url, q, method):
     try:
         proc = await _a.create_subprocess_exec(
             *args, stdout=_a.subprocess.PIPE, stderr=_a.subprocess.DEVNULL)
-        out, _ = await _a.wait_for(proc.communicate(), timeout=12)
+        out, _ = await _a.wait_for(proc.communicate(), timeout=9)
         return out.decode("utf-8", "ignore") or None
     except Exception:
         if proc:
@@ -133,10 +133,10 @@ async def serp_fetch(client, url, q, method="get"):
     try:
         if method == "post":
             r = await client.post(url, data={"q": q}, headers=_SERP_HEADERS,
-                                  timeout=httpx.Timeout(10.0))
+                                  timeout=httpx.Timeout(7.0))
         else:
             r = await client.get(url, params={"q": q}, headers=_SERP_HEADERS,
-                                 timeout=httpx.Timeout(10.0))
+                                 timeout=httpx.Timeout(7.0))
         if r.status_code == 200 and _looks_like_results(r.text):
             return r.text
     except Exception:
@@ -345,7 +345,7 @@ async def serp_people(client, brand, left):
     found = {}
     queries = [f'site:linkedin.com/in "{brand}" {_ROLE_QUERY}',
                f'site:linkedin.com/in "{brand}"']
-    for url, method in SERP_ENGINES:
+    for url, method in SERP_ENGINES[:3]:
         for q in queries:
             if left() < 8:
                 return found
