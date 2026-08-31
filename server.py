@@ -3,19 +3,36 @@ from __future__ import annotations
 
 import asyncio
 import io
+import os
 import uuid
 from pathlib import Path
 from typing import List, Optional
 
 import httpx
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+import api
 import finder
 
-app = FastAPI(title="Mail Sniff")
+app = FastAPI(
+    title="Mail Sniff",
+    version="1.0.0",
+    description=("Free contact-email discovery. Scrapes the site first, then finds "
+                 "named people, and only guesses from the domain's own email "
+                 "pattern as a last resort. See /docs for the REST API."),
+)
+
+# a browser-based client needs this; lock it down with ALLOWED_ORIGINS in prod
+_origins = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware, allow_origins=_origins or ["*"], allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"], allow_headers=["*"],
+)
+app.include_router(api.router)
 
 HERE = Path(__file__).parent
 app.mount("/fonts", StaticFiles(directory=str(HERE / "fonts")), name="fonts")

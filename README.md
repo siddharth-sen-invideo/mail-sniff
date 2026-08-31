@@ -41,6 +41,18 @@ Per email: syntax + **MX record** (can the domain receive mail?) + disposable-do
 > SMTP probing (blocked on most hosts, useless for Gmail, and risks IP blacklisting). The real
 > final check is simply sending and watching for bounces.
 
+## Use it from your own tool (REST API)
+
+Synchronous JSON endpoints, interactive docs at `/docs`:
+
+```bash
+curl "http://localhost:8100/api/v1/find?domain=invideo.io"
+```
+
+Full reference in **[API.md](API.md)**, including auth, batching and the
+`sourcing` field that tells you which addresses were scraped and which were
+generated.
+
 ## Use it from another tool (MCP)
 
 Mail Sniff ships an MCP server so other tools can call it directly.

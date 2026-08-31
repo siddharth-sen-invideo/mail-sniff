@@ -23,17 +23,14 @@ import contextlib
 import json
 import sys
 
-import httpx
-
 import finder
+import runner
 
 PROTOCOL_DEFAULT = "2024-11-05"
 SUPPORTED_PROTOCOLS = {"2024-11-05", "2025-03-26", "2025-06-18"}
 SERVER_INFO = {"name": "mail-sniff", "version": "1.0.0"}
 
 MAX_DOMAINS = 50
-CONCURRENCY = 5
-PER_DOMAIN_TIMEOUT = 110
 
 TOOLS = [
     {
@@ -98,62 +95,6 @@ TOOLS = [
 ]
 
 
-def _shape(r: dict) -> dict:
-    """Compact, model-friendly view of one domain result."""
-    return {
-        "domain": r.get("domain"),
-        "emails": [
-            {"email": e["email"], "source": e.get("source"),
-             "confidence": e.get("level"), "role": e.get("title") or None}
-            for e in (r.get("emails") or [])
-        ],
-        "people": [
-            {"name": p.get("name") or None, "title": p.get("title") or None,
-             "email": p.get("email"), "sourcing": p.get("status"),
-             "evidence": p.get("source")}
-            for p in (r.get("people") or [])
-        ],
-        "linkedin": (r.get("linkedin") or {}).get("url"),
-        "confidence": r.get("confidence"),
-        "note": r.get("note"),
-    }
-
-
-async def _run_domains(domains):
-    sem = asyncio.Semaphore(CONCURRENCY)
-    limits = httpx.Limits(max_connections=CONCURRENCY * 20,
-                          max_keepalive_connections=CONCURRENCY * 6)
-    timeout = httpx.Timeout(18.0, connect=8.0)
-    out = [None] * len(domains)
-    async with httpx.AsyncClient(headers={"User-Agent": finder.UA}, follow_redirects=True,
-                                 timeout=timeout, verify=False, limits=limits) as client:
-        async def one(i, dom):
-            async with sem:
-                try:
-                    r = await asyncio.wait_for(finder.process_domain(client, dom),
-                                               timeout=PER_DOMAIN_TIMEOUT)
-                except asyncio.TimeoutError:
-                    r = {"domain": dom, "emails": [], "people": [], "note": "timed out"}
-                except Exception as exc:
-                    r = {"domain": dom, "emails": [], "people": [],
-                         "note": f"error: {type(exc).__name__}: {exc}"[:200]}
-                r["confidence"] = finder.domain_confidence(r.get("emails", []))
-                out[i] = _shape(r)
-        await asyncio.gather(*[one(i, d) for i, d in enumerate(domains)])
-    return out
-
-
-async def _verify(email: str) -> dict:
-    email = (email or "").strip().lower()
-    valid = finder._valid_email(email)
-    if not valid:
-        return {"email": email, "confidence": "low", "reason": "not a valid address"}
-    await asyncio.to_thread(finder._has_mailserver, valid.split("@")[1])
-    level, label = finder.classify(valid)
-    return {"email": valid, "confidence": level, "reason": label,
-            "role_address": valid.split("@")[0] in finder.ROLE_LOCALS}
-
-
 def _call_tool(name: str, args: dict):
     if name == "find_contacts":
         domains = [str(d).strip() for d in (args.get("domains") or []) if str(d).strip()]
@@ -161,7 +102,7 @@ def _call_tool(name: str, args: dict):
             raise ValueError("domains must be a non-empty list")
         if len(domains) > MAX_DOMAINS:
             raise ValueError(f"at most {MAX_DOMAINS} domains per call")
-        results = asyncio.run(_run_domains(domains))
+        results = asyncio.run(runner.run_domains(domains))
         found = sum(1 for r in results if r["emails"] or r["people"])
         return {"searched": len(results), "with_contacts": found, "results": results}
 
@@ -169,7 +110,7 @@ def _call_tool(name: str, args: dict):
         dom = str(args.get("domain") or "").strip()
         if not dom:
             raise ValueError("domain is required")
-        r = asyncio.run(_run_domains([dom]))[0]
+        r = asyncio.run(runner.run_domains([dom]))[0]
         return {"domain": r["domain"], "people": r["people"],
                 "linkedin": r["linkedin"], "note": r["note"]}
 
@@ -177,7 +118,7 @@ def _call_tool(name: str, args: dict):
         addr = str(args.get("email") or "").strip()
         if not addr:
             raise ValueError("email is required")
-        return asyncio.run(_verify(addr))
+        return asyncio.run(runner.verify_email(addr))
 
     raise ValueError(f"unknown tool: {name}")
 
