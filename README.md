@@ -46,10 +46,10 @@ Per email: syntax + **MX record** (can the domain receive mail?) + disposable-do
 Synchronous JSON endpoints, interactive docs at `/docs`:
 
 ```bash
-curl "http://localhost:8100/api/v1/find?domain=invideo.io"
+curl "https://YOUR-SERVICE.onrender.com/api/v1/find?domain=invideo.io"
 ```
 
-Full reference in **[API.md](API.md)**, including auth, batching and the
+Runs live on Render, no laptop needed. Full reference in **[API.md](API.md)**, including auth, batching and the
 `sourcing` field that tells you which addresses were scraped and which were
 generated.
 

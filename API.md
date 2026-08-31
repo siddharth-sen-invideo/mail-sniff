@@ -2,8 +2,27 @@
 
 Interactive docs: **`/docs`** · schema: **`/openapi.json`**
 
-Base URL is wherever the app runs: `http://localhost:8100` locally, or your
-Render URL in production.
+## Base URL
+
+Use your deployed service, which runs whether or not your laptop is on:
+
+```
+https://YOUR-SERVICE.onrender.com
+```
+
+Find it in the Render dashboard: click the service, the URL sits at the top.
+`http://localhost:8100` is only for local development. Every example below works
+against either; swap the host.
+
+Confirm the live one is up and serving this API:
+
+```bash
+curl https://YOUR-SERVICE.onrender.com/api/v1/health
+```
+
+Expect `{"ok":true,"dns":true,"auth_required":false,"sync_max_domains":10}`. A
+404 means the deploy has not picked up the API yet, and `auth_required:false` on
+a public host means anyone can call it, so set a key (below).
 
 ## Endpoints
 
@@ -75,16 +94,38 @@ Authorization: Bearer your-key
 On Render: Environment, add `MAILSNIFF_API_KEY`. Restrict browser callers with
 `ALLOWED_ORIGINS=https://yourapp.com` (defaults to `*`).
 
+## Running it live on Render
+
+Set these under the service's **Environment** tab, then redeploy:
+
+| Variable | Why |
+|---|---|
+| `MAILSNIFF_API_KEY` | Required. Without it your endpoint is world-callable and strangers burn your instance. |
+| `ALLOWED_ORIGINS` | `https://yourapp.com` so only your tool's browser code can call it. Defaults to `*`. |
+
+Three things about the **free** tier that affect an API consumer:
+
+1. **It sleeps after about 15 minutes idle.** The next request waits 30 to 60
+   seconds while it wakes. Your tool must use a generous timeout, or keep the
+   service warm by pinging `/api/v1/health` every 10 minutes from a free cron
+   (cron-job.org). Render's Starter plan removes the sleeping.
+2. **Jobs live in memory.** A sleep or redeploy discards job IDs, so a
+   `/api/job/{id}` poll can 404 mid-batch. For long lists, either chunk into
+   synchronous calls of 10 or expect to retry.
+3. **Scraping runs from a datacenter IP,** which more sites block than a home
+   connection. If the live hit rate is noticeably worse than local, that is why,
+   and the fix is a proxy rather than a code change.
+
 ## Examples
 
 curl:
 
 ```bash
-curl "http://localhost:8100/api/v1/find?domain=invideo.io"
+curl "https://YOUR-SERVICE.onrender.com/api/v1/find?domain=invideo.io"
 ```
 
 ```bash
-curl -X POST http://localhost:8100/api/v1/find \
+curl -X POST https://YOUR-SERVICE.onrender.com/api/v1/find \
   -H 'Content-Type: application/json' \
   -H 'X-API-Key: your-key' \
   -d '{"domains":["invideo.io","ahrefs.com"],"include_people":true}'
@@ -96,7 +137,7 @@ Python:
 import requests
 
 r = requests.post(
-    "http://localhost:8100/api/v1/find",
+    "https://YOUR-SERVICE.onrender.com/api/v1/find",
     json={"domains": ["invideo.io", "ahrefs.com"]},
     headers={"X-API-Key": "your-key"},
     timeout=300,
@@ -111,7 +152,7 @@ for row in r.json()["results"]:
 JavaScript:
 
 ```js
-const res = await fetch("http://localhost:8100/api/v1/find", {
+const res = await fetch("https://YOUR-SERVICE.onrender.com/api/v1/find", {
   method: "POST",
   headers: { "Content-Type": "application/json", "X-API-Key": "your-key" },
   body: JSON.stringify({ domains: ["invideo.io"] }),
@@ -123,10 +164,10 @@ console.log(results[0].all_emails);
 Large batches (over 10 domains) use the async pair:
 
 ```bash
-JOB=$(curl -s -X POST http://localhost:8100/api/find \
+JOB=$(curl -s -X POST https://YOUR-SERVICE.onrender.com/api/find \
   -H 'Content-Type: application/json' \
   -d '{"domains":["a.com","b.com","c.com"]}' | jq -r .job_id)
-curl -s "http://localhost:8100/api/job/$JOB" | jq '{done,total,running}'
+curl -s "https://YOUR-SERVICE.onrender.com/api/job/$JOB" | jq '{done,total,running}'
 ```
 
 Poll until `running` is false. CSV and XLSX exports are at
