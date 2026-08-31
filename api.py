@@ -22,7 +22,10 @@ import runner
 
 router = APIRouter(prefix="/api/v1", tags=["Mail Sniff v1"])
 
-SYNC_MAX_DOMAINS = 10      # beyond this, use the async job endpoints
+# A domain takes 40-155s on a fraction-of-a-CPU host, so a large synchronous
+# call just hangs the caller. Keep the blocking path small there and steer
+# batches to the async job endpoints.
+SYNC_MAX_DOMAINS = 3 if runner.SMALL_HOST else 10
 
 
 def _require_key(x_api_key: Optional[str], authorization: Optional[str]) -> None:
@@ -40,7 +43,7 @@ def _require_key(x_api_key: Optional[str], authorization: Optional[str]) -> None
 
 class FindBody(BaseModel):
     domains: List[str] = Field(..., description="Domains or URLs to scan",
-                               min_items=1, max_items=SYNC_MAX_DOMAINS)
+                               min_items=1)
     include_people: bool = Field(True, description="Include named humans and their addresses")
 
 

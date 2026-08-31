@@ -35,8 +35,15 @@ a public host means anyone can call it, so set a key (below).
 | `GET` | `/api/v1/health` | Liveness, and whether a key is required |
 | `POST` | `/api/find` + `GET` `/api/job/{id}` | Async, for large batches |
 
-A domain takes roughly **15 to 60 seconds**, so set a client timeout of 120s or
-more. Five domains are scanned in parallel.
+### How long a call takes
+
+Measured on the live free-tier instance: **40 to 155 seconds per domain**, two in
+parallel. On a laptop it is 15 to 60 seconds with five in parallel.
+
+That has a practical consequence: **use the synchronous endpoint for 1 to 3
+domains, and the async job endpoints for anything larger.** A synchronous call
+with five domains on the free tier runs past ten minutes and most HTTP clients
+give up. `GET /api/v1/health` reports the live `sync_max_domains`.
 
 ## Response
 
