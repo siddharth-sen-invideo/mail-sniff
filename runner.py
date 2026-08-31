@@ -7,15 +7,28 @@ server and the web UI, so the three cannot drift apart.
 from __future__ import annotations
 
 import asyncio
+import os
 
 import httpx
 
 import finder
 
-CONCURRENCY = 5            # domains in flight; more starves each one's budget
-PER_DOMAIN_TIMEOUT = 110   # backstop only: process_domain self-limits and
-                           # returns partial results well before this
-READ_TIMEOUT = 18.0        # 300KB+ pages need this under load
+# Render's free/starter instances get a fraction of a CPU, so settings tuned for
+# a laptop starve there: pages parse slowly, the budget blows, and every domain
+# times out. Detect the constrained host and back off. Override with env vars.
+SMALL_HOST = bool(os.environ.get("RENDER") or os.environ.get("MAILSNIFF_SMALL_HOST"))
+
+
+def _envint(name, default):
+    try:
+        return max(1, int(os.environ.get(name, "")))
+    except (TypeError, ValueError):
+        return default
+
+
+CONCURRENCY = _envint("MAILSNIFF_CONCURRENCY", 2 if SMALL_HOST else 5)
+PER_DOMAIN_TIMEOUT = _envint("MAILSNIFF_HARD_TIMEOUT", 150 if SMALL_HOST else 110)
+READ_TIMEOUT = float(_envint("MAILSNIFF_READ_TIMEOUT", 18))
 CONNECT_TIMEOUT = 8.0
 
 

@@ -156,9 +156,25 @@ AUTHORITY_RANK = [
 LI_SKIP_SLUGS = {"company", "school", "jobs", "feed", "pub", "shareArticle", "sharing",
                  "login", "signup", "cws", "learning", "posts"}
 MAX_EMAILS_PER_DOMAIN = 25   # was 6, which silently hid real addresses
-PER_DOMAIN_BUDGET = 55  # seconds; bot-walled domains can't stall the whole batch
+_SMALL_HOST = bool(os.environ.get("RENDER") or os.environ.get("MAILSNIFF_SMALL_HOST"))
+
+
+def _envint(name, default):
+    try:
+        return max(1, int(os.environ.get(name, "")))
+    except (TypeError, ValueError):
+        return default
+
+
+# seconds; bot-walled domains can't stall the whole batch. A fraction-of-a-CPU
+# host needs longer per domain but must attempt far fewer pages.
+PER_DOMAIN_BUDGET = _envint("MAILSNIFF_BUDGET", 95 if _SMALL_HOST else 55)
 MAX_PEOPLE_PER_DOMAIN = 8
-MAX_PAGE_FETCHES = 70
+MAX_PAGE_FETCHES = _envint("MAILSNIFF_MAX_PAGES", 26 if _SMALL_HOST else 70)
+# regexing a 700KB page is the main CPU cost; most contact details sit well
+# inside this and the cap is what keeps a small instance responsive
+MAX_HTML_BYTES = _envint("MAILSNIFF_MAX_HTML", 400_000)
+MAX_TEXT_BYTES = 120_000
 
 _mx_cache: dict[str, bool] = {}
 
@@ -331,7 +347,8 @@ def derive_name(email: str) -> str | None:
 
 
 def _visible_text(html: str) -> str:
-    return TAG_RE.sub(" ", SCRIPT_STYLE_RE.sub(" ", html))
+    # bounded: stripping tags over a huge page dominates CPU on small instances
+    return TAG_RE.sub(" ", SCRIPT_STYLE_RE.sub(" ", (html or "")[:MAX_TEXT_BYTES]))
 
 
 def _title_from_text(text: str, name: str) -> str:
@@ -459,7 +476,7 @@ async def _curl(url: str):
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=17)
         txt = out.decode("utf-8", "ignore")
-        return txt[:700000] if txt.strip() else None
+        return txt[:MAX_HTML_BYTES] if txt.strip() else None
     except Exception:
         if proc:
             try:
@@ -481,7 +498,7 @@ async def _fetch(client: httpx.AsyncClient, url: str, timeout=None):
             if any(m in r.text[:4000].lower() for m in CF_CHALLENGE):
                 status = 403
             else:
-                return str(r.url), r.text[:700000]
+                return str(r.url), r.text[:MAX_HTML_BYTES]
         else:
             status = r.status_code
     except Exception:

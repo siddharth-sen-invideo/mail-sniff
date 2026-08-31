@@ -122,6 +122,11 @@ async def verify_post(
 @router.get("/health", summary="Liveness and capability check")
 async def health():
     import finder
+    import runner
     return {"ok": True, "dns": finder._HAS_DNS,
             "auth_required": bool((os.environ.get("MAILSNIFF_API_KEY") or "").strip()),
-            "sync_max_domains": SYNC_MAX_DOMAINS}
+            "sync_max_domains": SYNC_MAX_DOMAINS,
+            "config": {"small_host": runner.SMALL_HOST,
+                       "concurrency": runner.CONCURRENCY,
+                       "max_pages": finder.MAX_PAGE_FETCHES,
+                       "budget_s": finder.PER_DOMAIN_BUDGET}}
