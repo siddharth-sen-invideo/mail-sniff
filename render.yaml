@@ -1,5 +1,4 @@
-# Render Blueprint - one-click deploy of Mail Sniff as a free always-on web service.
-# On render.com: New + -> Blueprint -> pick this repo. Render reads this file.
+# Render Blueprint. On render.com: New + -> Blueprint -> pick this repo.
 services:
   - type: web
     name: mail-sniff
@@ -7,3 +6,13 @@ services:
     dockerfilePath: ./Dockerfile
     plan: free
     autoDeploy: true
+    healthCheckPath: /api/v1/health
+    envVars:
+      # Render generates a strong secret itself; read it in the dashboard under
+      # Environment. Without a key the API is world-callable.
+      - key: MAILSNIFF_API_KEY
+        generateValue: true
+      # Set this to your app's origin (https://yourapp.com) in the dashboard so
+      # only your tool's browser code can call the API. Defaults to * in code.
+      - key: ALLOWED_ORIGINS
+        sync: false
