@@ -7,7 +7,7 @@ Interactive docs: **`/docs`** · schema: **`/openapi.json`**
 Use your deployed service, which runs whether or not your laptop is on:
 
 ```
-https://YOUR-SERVICE.onrender.com
+https://mail-sniff.onrender.com
 ```
 
 Find it in the Render dashboard: click the service, the URL sits at the top.
@@ -17,7 +17,7 @@ against either; swap the host.
 Confirm the live one is up and serving this API:
 
 ```bash
-curl https://YOUR-SERVICE.onrender.com/api/v1/health
+curl https://mail-sniff.onrender.com/api/v1/health
 ```
 
 Expect `{"ok":true,"dns":true,"auth_required":false,"sync_max_domains":10}`. A
@@ -128,11 +128,11 @@ Three things about the **free** tier that affect an API consumer:
 curl:
 
 ```bash
-curl "https://YOUR-SERVICE.onrender.com/api/v1/find?domain=invideo.io"
+curl "https://mail-sniff.onrender.com/api/v1/find?domain=invideo.io"
 ```
 
 ```bash
-curl -X POST https://YOUR-SERVICE.onrender.com/api/v1/find \
+curl -X POST https://mail-sniff.onrender.com/api/v1/find \
   -H 'Content-Type: application/json' \
   -H 'X-API-Key: your-key' \
   -d '{"domains":["invideo.io","ahrefs.com"],"include_people":true}'
@@ -144,7 +144,7 @@ Python:
 import requests
 
 r = requests.post(
-    "https://YOUR-SERVICE.onrender.com/api/v1/find",
+    "https://mail-sniff.onrender.com/api/v1/find",
     json={"domains": ["invideo.io", "ahrefs.com"]},
     headers={"X-API-Key": "your-key"},
     timeout=300,
@@ -159,7 +159,7 @@ for row in r.json()["results"]:
 JavaScript:
 
 ```js
-const res = await fetch("https://YOUR-SERVICE.onrender.com/api/v1/find", {
+const res = await fetch("https://mail-sniff.onrender.com/api/v1/find", {
   method: "POST",
   headers: { "Content-Type": "application/json", "X-API-Key": "your-key" },
   body: JSON.stringify({ domains: ["invideo.io"] }),
@@ -171,10 +171,10 @@ console.log(results[0].all_emails);
 Large batches (over 10 domains) use the async pair:
 
 ```bash
-JOB=$(curl -s -X POST https://YOUR-SERVICE.onrender.com/api/find \
+JOB=$(curl -s -X POST https://mail-sniff.onrender.com/api/find \
   -H 'Content-Type: application/json' \
   -d '{"domains":["a.com","b.com","c.com"]}' | jq -r .job_id)
-curl -s "https://YOUR-SERVICE.onrender.com/api/job/$JOB" | jq '{done,total,running}'
+curl -s "https://mail-sniff.onrender.com/api/job/$JOB" | jq '{done,total,running}'
 ```
 
 Poll until `running` is false. CSV and XLSX exports are at

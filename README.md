@@ -3,15 +3,45 @@
 A tiny, self-contained tool: paste domains → get contact emails back **in your exact order**,
 each with any names found and a confidence score. **Completely free - no API keys, nothing paid.**
 
-## Run
+An internal tool built for invideo link-building outreach: it finds who to contact
+at a site when you only have the domain.
+
+## Live
+
+**https://mail-sniff.onrender.com** - always on, no laptop needed. The web UI is at
+the root, the REST API under `/api/v1`, interactive docs at `/docs`.
+
+## Run it locally
 
 ```bash
 ./run.sh
 ```
 
 Then open **http://localhost:8100**. (First run creates a virtualenv and installs deps; ~30s.)
+Use a different port with `PORT=8200 ./run.sh`.
 
-To use a different port: `PORT=8200 ./run.sh`
+## Deploy
+
+Docker, deployed on Render from `main` (`Dockerfile` + `render.yaml`, autodeploy on
+push). Environment variables:
+
+| Variable | Purpose |
+|---|---|
+| `MAILSNIFF_API_KEY` | Required in production, or the API is world-callable. Send as `X-API-Key`. |
+| `ALLOWED_ORIGINS` | Comma-separated origins for browser clients. Defaults to `*`. |
+| `MAILSNIFF_CONCURRENCY` / `MAILSNIFF_MAX_PAGES` / `MAILSNIFF_BUDGET` | Override the host-aware scraper limits. |
+
+The service detects a small host (Render's `RENDER` env) and automatically drops to
+2 domains in flight over 26 pages each. On a fraction-of-a-CPU instance a domain
+takes 40 to 155 seconds, so **use the async job endpoints for batches** and keep
+synchronous calls to a few domains. `GET /api/v1/health` reports the live config.
+
+## Honest limits
+
+- Sites behind a JS bot challenge (Cloudflare interstitials) need a real browser; those are reported as blocked rather than silently empty.
+- LinkedIn, Instagram and X are login-walled, so only public search snippets are read. No LinkedIn scraping.
+- Verification is domain-level (syntax, MX, role, disposable). It deliberately does not probe individual mailboxes over SMTP.
+- Generated addresses are always labelled (`likely` / `guess`) and never mixed in with scraped ones.
 
 ## What it does
 
@@ -46,10 +76,11 @@ Per email: syntax + **MX record** (can the domain receive mail?) + disposable-do
 Synchronous JSON endpoints, interactive docs at `/docs`:
 
 ```bash
-curl "https://YOUR-SERVICE.onrender.com/api/v1/find?domain=invideo.io"
+curl -H "X-API-Key: $MAILSNIFF_API_KEY" \
+  "https://mail-sniff.onrender.com/api/v1/find?domain=invideo.io"
 ```
 
-Runs live on Render, no laptop needed. Full reference in **[API.md](API.md)**, including auth, batching and the
+Full reference in **[API.md](API.md)**, including auth, batching and the
 `sourcing` field that tells you which addresses were scraped and which were
 generated.
 
@@ -69,4 +100,8 @@ claude mcp add mail-sniff -- "$(pwd)/mcp_run.sh"
 | `finder.py` | discovery + verification engine |
 | `server.py` | FastAPI backend (jobs, live status, CSV/XLSX export) |
 | `index.html` | the whole UI (single file, no build step) |
+| `runner.py` | shared concurrency, timeouts and result shaping (one source of truth) |
+| `api.py` | REST API v1 |
+| `mcp_server.py` | MCP stdio server |
+| `people.py` | name extraction + email-pattern inference |
 | `run.sh` | setup + launch |
