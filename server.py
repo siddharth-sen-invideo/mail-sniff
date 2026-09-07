@@ -71,6 +71,9 @@ async def _run_job(job_id: str, domains: list[str]):
     async with runner.new_client() as client:
         async def one(idx: int, dom: str):
             async with sem:
+                # the row is in flight now: the UI reads this to show a live bar
+                # against the exact domains being crawled
+                job["results"][idx]["state"] = "scanning"
                 try:
                     res = await asyncio.wait_for(finder.process_domain(client, dom),
                                                  timeout=runner.PER_DOMAIN_TIMEOUT)
@@ -82,6 +85,7 @@ async def _run_job(job_id: str, domains: list[str]):
                            "emails": [], "names": [], "found": False,
                            "error": str(e)[:200]}
                 res["confidence"] = finder.domain_confidence(res.get("emails", []))
+                res["state"] = "done"
                 job["results"][idx] = res
                 job["done"] += 1
 
@@ -102,7 +106,7 @@ async def start_find(payload: FindIn):
         "running": True,
         "results": [
             {"domain": d, "normalized": finder.normalize_domain(d), "emails": [],
-             "names": [], "found": None, "confidence": "pending"}
+             "names": [], "found": None, "confidence": "pending", "state": "queued"}
             for d in domains
         ],
     }

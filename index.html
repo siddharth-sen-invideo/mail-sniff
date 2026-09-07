@@ -96,6 +96,15 @@
   .idx{color:var(--faint);width:34px;font-variant-numeric:tabular-nums}
   .dom{font-weight:600;color:var(--ink)}
   .dom .norm{display:block;color:var(--dim);font-size:12px;font-weight:400;margin-top:3px}
+  /* live per-row crawl state. Rows are diffed in place, never re-created, so
+     the entrance animation fires once and nothing flickers. */
+  tr.scanning{background:var(--panel)}
+  .rowbar{height:2px;max-width:150px;margin-top:8px;background:var(--line);border-radius:2px;overflow:hidden}
+  .rowbar > i{display:block;height:100%;width:38%;border-radius:2px;background:var(--ink);
+    animation:crawl 1.15s var(--ease) infinite}
+  .rstate{display:block;font-size:11px;margin-top:5px;color:var(--mut);letter-spacing:.02em}
+  .rstate.queued{color:var(--faint)}
+  @keyframes crawl{0%{transform:translateX(-110%)}100%{transform:translateX(320%)}}
   .emails{display:flex;flex-direction:column;gap:9px}
   .em{color:var(--ink);font-size:13.5px;line-height:1.35}
   .em .src{color:var(--dim);font-size:11.5px;font-weight:400}
@@ -381,6 +390,7 @@ z"/></g><g class="fx"><path fill="#0a0a0a" d="M170,95 l3,9 9,3 -9,3 -3,9 -3,-9 -
 const $=s=>document.querySelector(s);
 const ta=$("#domains"), countEl=$("#count");
 let jobId=null, timer=null, lastResults=[];
+let rowEls=[], rowSig=[], rowCache=[];   // keyed rows, so polling never repaints the table
 
 const pet=$("#pet"), petBubble=$("#petbubble");
 let prevFound=0;
@@ -471,6 +481,7 @@ async function start(){
   const domains=domainList(); if(!domains.length){ta.focus();return;}
   $("#go").disabled=true; $("#go").textContent="Searching";
   $("#prog").classList.add("on"); $("#resWrap").classList.add("on");
+  resetRows();
   setPet("busy","on the scent…");
   const res=await fetch("/api/find",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({domains})});
   jobId=(await res.json()).job_id; prevFound=0;
@@ -513,43 +524,82 @@ async function poll(){
 }
 
 function esc(s){return (s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
+const COL_CLASS=["idx","","","","li-cell",""];
+
+function resetRows(){ rowEls=[]; rowSig=[]; rowCache=[]; $("#tbody").innerHTML=""; }
+
+// Build the six cell strings for one result, plus the row's state.
+function rowCells(r,i){
+  const pending=r.found===null;
+  const state=r.state||(pending?"queued":"done");
+
+  let emailsHtml;
+  if(pending) emailsHtml=`<span class="sk"></span>`;
+  else if(r.emails&&r.emails.length) emailsHtml=`<div class="emails">`+r.emails.map(e=>
+      `<div class="em">${esc(e.email)}</div>`).join("")+`</div>`;
+  else emailsHtml=`<span class="notfound">email not found</span>`+
+      (r.note?`<div class="why">${esc(r.note)}</div>`:``);
+
+  // the domain cell carries the live crawl indicator
+  let dom=`<span class="dom">${esc(r.domain)}</span>`+
+    (r.normalized&&r.normalized!==r.domain?`<span class="norm">${esc(r.normalized)}</span>`:"");
+  if(state==="scanning") dom+=`<div class="rowbar"><i></i></div><span class="rstate">crawling</span>`;
+  else if(state==="queued") dom+=`<span class="rstate queued">queued</span>`;
+
+  let ppl=`<span class="none">-</span>`;
+  if(r.people&&r.people.length){
+    ppl=`<div class="ppl">`+r.people.map(p=>
+      `<div class="prow">`+
+      (p.name?`<span class="pname">${esc(p.name)}</span>`:``)+
+      (p.title?` <span class="ptitle">${esc(p.title)}</span>`:``)+
+      `<br/><span class="pmail">${esc(p.email)}</span> `+
+      `<span class="pst ${esc(p.status)}" title="${esc(p.source||'')}">${esc(p.status)}</span>`+
+      `</div>`).join("")+`</div>`;
+  }else if(!pending){ ppl=`<span class="notfound">no named people</span>`; }
+
+  let li=`<span class="none">-</span>`;
+  if(r.linkedin&&r.linkedin.url){
+    const who=[r.linkedin.name,r.linkedin.role].filter(Boolean).join(" · ");
+    li=`<a href="${esc(r.linkedin.url)}" target="_blank" rel="noopener">in/${esc((r.linkedin.url.split('/in/')[1]||r.linkedin.url.split('/company/')[1]||'profile'))}</a>${who?`<span class="who">${esc(who)}</span>`:""}${r.linkedin.guess?`<span class="guess">search guess</span>`:""}`;
+  }
+
+  const conf=pending?"pending":(r.confidence||"none");
+  const confLabel={high:"High",medium:"Medium",low:"Low",none:"Not found",pending:"…"}[conf];
+  return {state,pending,cells:[String(i+1),dom,ppl,emailsHtml,li,
+    `<span class="conf ${conf}">${confLabel}</span>`]};
+}
+
+// Diff rows in place. Replacing tbody.innerHTML every poll re-created every <tr>,
+// which re-ran the rowin entrance animation twice a second: that was the flicker.
 function render(){
   const filter=$("#search").value.trim().toLowerCase();
-  $("#tbody").innerHTML=lastResults.map((r,i)=>{
-    const hay=(r.domain+" "+(r.emails||[]).map(e=>e.email).join(" ")).toLowerCase();
-    if(filter && !hay.includes(filter))return "";
-    const pending=r.found===null;
-    let emailsHtml;
-    if(pending) emailsHtml=`<span class="sk"></span>`;
-    else if(r.emails&&r.emails.length) emailsHtml=`<div class="emails">`+r.emails.map(e=>
-        `<div class="em">${esc(e.email)}</div>`).join("")+`</div>`;
-    else emailsHtml=`<span class="notfound">email not found</span>`+
-        (r.note?`<div class="why">${esc(r.note)}</div>`:``);
-    let ppl=`<span class="none">-</span>`;
-    if(r.people&&r.people.length){
-      ppl=`<div class="ppl">`+r.people.map(p=>
-        `<div class="prow">`+
-        (p.name?`<span class="pname">${esc(p.name)}</span>`:``)+
-        (p.title?` <span class="ptitle">${esc(p.title)}</span>`:``)+
-        `<br/><span class="pmail">${esc(p.email)}</span> `+
-        `<span class="pst ${esc(p.status)}" title="${esc(p.source||'')}">${esc(p.status)}</span>`+
-        `</div>`).join("")+`</div>`;
-    }else if(!pending){ ppl=`<span class="notfound">no named people</span>`; }
-    let li=`<span class="none">-</span>`;
-    if(r.linkedin&&r.linkedin.url){
-      const who=[r.linkedin.name,r.linkedin.role].filter(Boolean).join(" · ");
-      li=`<a href="${esc(r.linkedin.url)}" target="_blank" rel="noopener">in/${esc((r.linkedin.url.split('/in/')[1]||r.linkedin.url.split('/company/')[1]||'profile'))}</a>${who?`<span class="who">${esc(who)}</span>`:""}${r.linkedin.guess?`<span class="guess">search guess</span>`:""}`;
+  const tb=$("#tbody");
+  if(rowEls.length>lastResults.length) resetRows();
+
+  lastResults.forEach((r,i)=>{
+    const {state,pending,cells}=rowCells(r,i);
+    const cls=[pending?"pending":"",state==="scanning"?"scanning":""].filter(Boolean).join(" ");
+    const sig=cls+"\u0000"+cells.join("\u0001");
+
+    let tr=rowEls[i];
+    if(!tr){
+      tr=document.createElement("tr");
+      tr.style.animationDelay=Math.min(i*22,320)+"ms";   // entrance runs once
+      COL_CLASS.forEach(c=>{const td=document.createElement("td"); if(c)td.className=c; tr.appendChild(td);});
+      tb.appendChild(tr); rowEls[i]=tr;
     }
-    const conf=pending?"pending":(r.confidence||"none");
-    const confLabel={high:"High",medium:"Medium",low:"Low",none:"Not found",pending:"…"}[conf];
-    return `<tr class="${pending?'pending':''}" style="animation-delay:${Math.min(i*22,320)}ms">
-      <td class="idx">${i+1}</td>
-      <td><span class="dom">${esc(r.domain)}</span>${r.normalized&&r.normalized!==r.domain?`<span class="norm">${esc(r.normalized)}</span>`:""}</td>
-      <td>${ppl}</td>
-      <td>${emailsHtml}</td>
-      <td class="li-cell">${li}</td>
-      <td><span class="conf ${conf}">${confLabel}</span></td></tr>`;
-  }).join("");
+    if(rowSig[i]!==sig){
+      if(tr.className!==cls) tr.className=cls;
+      const prev=rowCache[i]||[];
+      for(let c=0;c<cells.length;c++){
+        if(prev[c]!==cells[c]) tr.children[c].innerHTML=cells[c];  // only what changed
+      }
+      rowCache[i]=cells; rowSig[i]=sig;
+    }
+    const hay=(r.domain+" "+(r.emails||[]).map(e=>e.email).join(" ")).toLowerCase();
+    const hide=!!(filter&&!hay.includes(filter));
+    if(tr.hidden!==hide) tr.hidden=hide;   // filter hides rows, never rebuilds them
+  });
 }
 
 $("#search").addEventListener("input",render);
