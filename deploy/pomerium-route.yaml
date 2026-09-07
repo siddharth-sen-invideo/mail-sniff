@@ -1,0 +1,61 @@
+# Mail Sniff behind Pomerium at https://mail-sniff.apps.iv1.in
+#
+# THE PROBLEM this solves: Pomerium 302-redirects every request to SSO, so an
+# API client receives an HTML login page instead of JSON. Browsers are fine;
+# machine callers are not. Verified 2026-09-07: only /healthz (answered by
+# Envoy) returns 200, and every /api/v1 path returns 302.
+#
+# Pick ONE of the two options below.
+
+# ---------------------------------------------------------------------------
+# OPTION A (recommended): keep the UI behind SSO, let the API through, and
+# authenticate the API in the app with a key. Two routes on the same host.
+# ---------------------------------------------------------------------------
+routes:
+  # 1. the API: no SSO, app enforces MAILSNIFF_API_KEY
+  - from: https://mail-sniff.apps.iv1.in
+    to: http://mail-sniff.default.svc.cluster.local:8100
+    prefix: /api/
+    allow_public_unauthenticated_access: true
+    preserve_host_header: true
+
+  # 2. everything else (the UI, /docs): SSO as today
+  - from: https://mail-sniff.apps.iv1.in
+    to: http://mail-sniff.default.svc.cluster.local:8100
+    policy:
+      - allow:
+          or:
+            - domain:
+                is: invideo.io
+    pass_identity_headers: true
+    preserve_host_header: true
+
+# App environment for OPTION A. The key is REQUIRED here: the /api/ route is
+# public at the proxy, so the app is the only thing left guarding it.
+#   MAILSNIFF_API_KEY=<long random string>
+#   MAILSNIFF_REQUIRE_KEY=1              # refuse to serve if the key is missing
+#   MAILSNIFF_TRUST_PROXY_IDENTITY=1     # let SSO browser sessions through too
+#   ALLOWED_ORIGINS=https://<your-tool-host>
+#
+# Order matters: the more specific prefix route must be evaluated first. If your
+# Pomerium version does not support `prefix` on a route, split by host instead
+# (for example mail-sniff-api.apps.iv1.in for the public API route).
+
+# ---------------------------------------------------------------------------
+# OPTION B: no proxy change. Issue a Pomerium service account JWT and send it
+# as `Authorization: Pomerium <jwt>` on every call. Keeps everything behind
+# SSO, but the token has to be provisioned and rotated by whoever runs
+# pomerium.iv1.in, and it expires.
+# ---------------------------------------------------------------------------
+# app env for OPTION B:
+#   MAILSNIFF_TRUST_PROXY_IDENTITY=1
+#   (no MAILSNIFF_API_KEY needed; Pomerium is doing the authenticating)
+
+# ---------------------------------------------------------------------------
+# SECURITY NOTE on MAILSNIFF_TRUST_PROXY_IDENTITY: it makes the app treat
+# X-Pomerium-Jwt-Assertion / X-Pomerium-Claim-Email as proof of identity
+# WITHOUT verifying the signature. That is safe only while the app cannot be
+# reached except through Pomerium, since anyone able to hit the pod directly
+# could otherwise forge the header. Keep the service cluster-internal (no
+# separate public ingress, no NodePort). If the pod ever becomes directly
+# reachable, set MAILSNIFF_API_KEY as well so a key is still required.

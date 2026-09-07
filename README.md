@@ -8,8 +8,15 @@ at a site when you only have the domain.
 
 ## Live
 
-**https://mail-sniff.onrender.com** - always on, no laptop needed. The web UI is at
-the root, the REST API under `/api/v1`, interactive docs at `/docs`.
+| | |
+|---|---|
+| **https://mail-sniff.apps.iv1.in** | internal, SSO login with your invideo account. Use this one. |
+| **https://mail-sniff.onrender.com** | the API host, callable with a key. |
+
+The internal host is behind Pomerium, so it serves the UI to a logged-in browser
+but 302s API clients to a login page. `deploy/pomerium-route.yaml` has the route
+change that makes `/api/` callable there; until it is applied, point API clients
+at the Render host. Details in **[API.md](API.md)**.
 
 ## Run it locally
 
@@ -28,6 +35,8 @@ push). Environment variables:
 | Variable | Purpose |
 |---|---|
 | `MAILSNIFF_API_KEY` | Required in production, or the API is world-callable. Send as `X-API-Key`. |
+| `MAILSNIFF_REQUIRE_KEY` | `1` makes the app return 503 rather than ever serving open. |
+| `MAILSNIFF_TRUST_PROXY_IDENTITY` | `1` accepts Pomerium's SSO identity headers. Only where the app is unreachable except through the proxy. |
 | `ALLOWED_ORIGINS` | Comma-separated origins for browser clients. Defaults to `*`. |
 | `MAILSNIFF_CONCURRENCY` / `MAILSNIFF_MAX_PAGES` / `MAILSNIFF_BUDGET` | Override the host-aware scraper limits. |
 
@@ -104,4 +113,6 @@ claude mcp add mail-sniff -- "$(pwd)/mcp_run.sh"
 | `api.py` | REST API v1 |
 | `mcp_server.py` | MCP stdio server |
 | `people.py` | name extraction + email-pattern inference |
+| `clients/` | ready-made Python + TypeScript API clients |
+| `deploy/` | Pomerium route config for the internal host |
 | `run.sh` | setup + launch |

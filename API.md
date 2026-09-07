@@ -4,102 +4,82 @@ Interactive docs: **`/docs`** · schema: **`/openapi.json`**
 
 ## Base URL
 
-Use your deployed service, which runs whether or not your laptop is on:
+There are two deployments, and they behave differently:
 
-```
-https://mail-sniff.onrender.com
-```
+| Host | Use it for | Machine-callable today |
+|---|---|---|
+| `https://mail-sniff.apps.iv1.in` | the internal UI, SSO login with your invideo account | **No, see below** |
+| `https://mail-sniff.onrender.com` | API calls right now | Yes |
 
-Find it in the Render dashboard: click the service, the URL sits at the top.
-`http://localhost:8100` is only for local development. Every example below works
-against either; swap the host.
+### The internal host is behind SSO
 
-Confirm the live one is up and serving this API:
+`mail-sniff.apps.iv1.in` sits behind Pomerium. Every request that is not already
+carrying an SSO session gets a `302` to `pomerium.iv1.in`, so an API client
+receives an HTML login page instead of JSON. Measured 2026-09-07: only `/healthz`
+(answered by Envoy, not by Mail Sniff) returns 200; `/api/v1/health`, `/api/v1/find`,
+`/docs` and `/openapi.json` all return 302. Sending `X-API-Key` makes no
+difference, because the proxy rejects the request before the app ever sees it.
+
+**To make the internal host callable**, someone with access to the Pomerium config
+applies `deploy/pomerium-route.yaml`: it lets `/api/` through unauthenticated at
+the proxy and has the app require `MAILSNIFF_API_KEY` instead, while the UI stays
+behind SSO. The alternative in that file is a Pomerium service-account JWT, which
+needs no proxy change but has to be provisioned and rotated.
+
+Until that lands, point clients at the Render host.
 
 ```bash
-curl https://mail-sniff.onrender.com/api/v1/health
+curl -H "X-API-Key: $MAILSNIFF_API_KEY" \
+  "https://mail-sniff.onrender.com/api/v1/health"
 ```
 
-Expect `{"ok":true,"dns":true,"auth_required":false,"sync_max_domains":10}`. A
-404 means the deploy has not picked up the API yet, and `auth_required:false` on
-a public host means anyone can call it, so set a key (below).
-
-## Endpoints
-
-| Method | Path | Use |
-|---|---|---|
-| `GET` | `/api/v1/find?domain=invideo.io` | One domain, blocking |
-| `POST` | `/api/v1/find` | Up to 10 domains, blocking, input order kept |
-| `GET` | `/api/v1/verify?email=a@b.com` | Check one address |
-| `POST` | `/api/v1/verify` | Same, JSON body |
-| `GET` | `/api/v1/health` | Liveness, and whether a key is required |
-| `POST` | `/api/find` + `GET` `/api/job/{id}` | Async, for large batches |
-
-### How long a call takes
-
-Measured on the live free-tier instance: **40 to 155 seconds per domain**, two in
-parallel. On a laptop it is 15 to 60 seconds with five in parallel.
-
-That has a practical consequence: **use the synchronous endpoint for 1 to 3
-domains, and the async job endpoints for anything larger.** A synchronous call
-with five domains on the free tier runs past ten minutes and most HTTP clients
-give up. `GET /api/v1/health` reports the live `sync_max_domains`.
-
-## Response
-
-```json
-{
-  "count": 1,
-  "results": [{
-    "domain": "growthlens.co",
-    "emails": [
-      {"email": "pat@growthlens.co", "source": "contact page",
-       "confidence": "high", "role": null}
-    ],
-    "people": [
-      {"name": "Andrey Zhuravlev", "title": "Co-Founder",
-       "email": "andrey@growthlens.co", "sourcing": "likely",
-       "evidence": "guessed from this domain's first pattern"}
-    ],
-    "all_emails": ["pat@growthlens.co", "andrey@growthlens.co"],
-    "linkedin": "https://www.linkedin.com/in/and-9037a129",
-    "confidence": "high",
-    "note": null
-  }],
-  "result": { "...same as results[0], for single-domain calls..." }
-}
-```
-
-`all_emails` is a flat, de-duplicated list if you just want addresses.
-
-### Trust the `sourcing` field
-
-`emails[]` is always **scraped from the site**. `people[]` may contain generated
-addresses, so check `sourcing` before you send anything:
-
-| `sourcing` | Meaning | Safe to send? |
-|---|---|---|
-| `scraped` | Found verbatim on the site | Yes |
-| `verified` | Generated, then proven by public search or a Gravatar account | Yes |
-| `likely` | Generated from the domain's own pattern, MX valid | Probably |
-| `guess` | Generated, unverified | Verify first |
-
-When nothing is found, `note` says why: `no email published on the site`,
-`blocked by a bot challenge (needs a real browser)`, `site unreachable`, or
-`timed out`.
+Expect `{"ok":true,...,"auth":{"open_to_anyone":false}}`. If `open_to_anyone` is
+`true`, no key is set and anyone with the URL can run scans.
 
 ## Auth
 
-Open by default, which is fine on localhost and **not** fine on a public host.
-Set `MAILSNIFF_API_KEY` to require a key, then send either header:
+Checked in this order:
 
-```
-X-API-Key: your-key
-Authorization: Bearer your-key
+1. **API key** - `X-API-Key: <key>` or `Authorization: Bearer <key>`, compared in
+   constant time. Set `MAILSNIFF_API_KEY` to turn it on.
+2. **Proxy identity** - with `MAILSNIFF_TRUST_PROXY_IDENTITY=1`, a request
+   carrying Pomerium's `X-Pomerium-Jwt-Assertion` / `X-Pomerium-Claim-Email` is
+   already SSO-authenticated and is allowed through. Enabling this also means an
+   unauthenticated request is **refused** rather than served, so the app never
+   falls open if the proxy route is bypassed. Only enable it where the app cannot
+   be reached except through the proxy: the header is not signature-verified, so
+   a directly reachable pod could be fed a forged one.
+3. **Open mode** - no key configured. Fine on localhost, not on a shared host.
+   `MAILSNIFF_REQUIRE_KEY=1` makes the app return `503` instead of serving open.
+
+`GET /api/v1/whoami` reports which of the three let your call in, which is the
+quickest way to debug a client:
+
+```bash
+curl -H "X-API-Key: $MAILSNIFF_API_KEY" https://mail-sniff.onrender.com/api/v1/whoami
+# {"authorized_as":"api_key","proxy_headers_seen":[]}
 ```
 
-On Render: Environment, add `MAILSNIFF_API_KEY`. Restrict browser callers with
-`ALLOWED_ORIGINS=https://yourapp.com` (defaults to `*`).
+## Clients
+
+Ready-made, in `clients/`:
+
+- **`clients/mailsniff.py`** - `MailSniff().find("invideo.io")`, `.find_many([...])`
+  (async job, polled), `.verify(...)`. Reads `MAILSNIFF_URL` and `MAILSNIFF_API_KEY`.
+- **`clients/mailsniff.ts`** - same surface, no dependencies, typed results.
+
+Both refuse to follow a redirect and raise `NotAuthenticated` with the login URL
+if they hit an SSO wall, instead of handing you back HTML.
+
+```python
+from mailsniff import MailSniff
+ms = MailSniff(base_url="https://mail-sniff.onrender.com", api_key=KEY)
+print(ms.find("invideo.io")["all_emails"])
+print(ms.find_many(["a.com", "b.com"]))     # batch, keeps input order
+```
+
+Do not put the key in browser code: it would ship to every visitor. Call it from
+your backend.
 
 ## Running it live on Render
 
