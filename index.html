@@ -443,9 +443,28 @@ $("#file").addEventListener("change",e=>{
 });
 
 function animateNum(el,to){
-  const from=parseInt(el.textContent)||0; if(from===to)return;
-  const step=Math.max(1,Math.ceil(Math.abs(to-from)/12)); let cur=from;
-  const t=setInterval(()=>{cur+=(to>cur?step:-step); if(cur>=to&&step>0||cur<=to&&step<0){cur=to;clearInterval(t);} el.textContent=cur;},28);
+  // A non-finite target used to write "NaN" and leave the interval running for
+  // ever; and because parseInt("NaN")||0 === 0, the equal-value early return
+  // then made that NaN permanent. Coerce, clear, and always write the result.
+  const target=Number.isFinite(Number(to))?Math.round(Number(to)):0;
+  if(el._anim){clearInterval(el._anim);el._anim=null;}
+  const parsed=parseInt(el.textContent,10);
+  const from=Number.isFinite(parsed)?parsed:0;
+  if(from===target){el.textContent=String(target);return;}
+  const dir=target>from?1:-1;
+  const step=Math.max(1,Math.ceil(Math.abs(target-from)/12))*dir;
+  let cur=from;
+  el._anim=setInterval(()=>{
+    cur+=step;
+    if((dir>0&&cur>=target)||(dir<0&&cur<=target)){cur=target;clearInterval(el._anim);el._anim=null;}
+    el.textContent=String(cur);
+  },28);
+}
+
+function stopPolling(msg){
+  clearInterval(timer);
+  $("#go").disabled=false; $("#go").textContent="Find emails";
+  if(msg){$("#barstat").textContent=msg; setPet("done sad",msg);}
 }
 
 async function start(){
@@ -460,23 +479,36 @@ async function start(){
 
 async function poll(){
   if(!jobId)return;
-  const j=await (await fetch("/api/job/"+jobId)).json();
-  lastResults=j.results;
-  if(j.found>prevFound){petReact(j.found-prevFound);} prevFound=j.found;
-  animateNum($("#s-scanned"),j.done); animateNum($("#s-found"),j.found); animateNum($("#s-people"),j.people||0);
-  animateNum($("#s-hi"),j.counts.high); animateNum($("#s-md"),j.counts.medium); animateNum($("#s-lo"),j.counts.low);
-  const pct=j.total?Math.round(j.done/j.total*100):0;
+  let j;
+  try{
+    const res=await fetch("/api/job/"+jobId);
+    // jobs live in memory, so a restarted or second worker answers 404. Say so
+    // rather than sitting on "Searching 0 of N" for ever.
+    if(res.status===404){jobId=null;stopPolling("that run is no longer on the server, which restarted. Run it again.");return;}
+    if(!res.ok)return;               // transient error: keep the last good view, retry next tick
+    j=await res.json();
+  }catch(e){ return; }               // network blip or a non-JSON proxy page: retry next tick
+  if(!j||typeof j.total!=="number")return;   // not a job payload
+
+  const done=Number(j.done)||0, found=Number(j.found)||0, total=Number(j.total)||0;
+  const counts=j.counts||{};
+  if(Array.isArray(j.results))lastResults=j.results;
+
+  if(found>prevFound){petReact(found-prevFound);} prevFound=found;
+  animateNum($("#s-scanned"),done); animateNum($("#s-found"),found); animateNum($("#s-people"),j.people);
+  animateNum($("#s-hi"),counts.high); animateNum($("#s-md"),counts.medium); animateNum($("#s-lo"),counts.low);
+  const pct=total?Math.round(done/total*100):0;
   $("#barfill").style.width=pct+"%"; $("#barpct").textContent=pct+"%";
   $("#barstat").innerHTML=j.running
-    ? `<span class="live"><span class="pd"></span>Searching ${j.done} of ${j.total}</span>`
-    : `Done · ${j.found} of ${j.total} domains have an email`;
-  $("#resCount").textContent=j.total?`${j.found} of ${j.total} found`:"";
+    ? `<span class="live"><span class="pd"></span>Searching ${done} of ${total}</span>`
+    : `Done · ${found} of ${total} domains have an email`;
+  $("#resCount").textContent=total?`${found} of ${total} found`:"";
   render();
   if(j.running){
-    setPet("busy",`sniffing ${j.done} of ${j.total}… found ${j.found}`);
+    setPet("busy",`sniffing ${done} of ${total}… found ${found}`);
   }else{
-    clearInterval(timer);$("#go").disabled=false;$("#go").textContent="Find emails";
-    setPet(j.found ? "done" : "done sad", j.found ? `all sniffed out · ${j.found} of ${j.total}!` : "no emails this time…");
+    stopPolling(null);
+    setPet(found ? "done" : "done sad", found ? `all sniffed out · ${found} of ${total}!` : "no emails this time…");
   }
 }
 
