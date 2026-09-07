@@ -35,11 +35,17 @@ export class MailSniffError extends Error {}
 export class MailSniff {
   private base: string;
   private apiKey?: string;
+  private pomeriumToken?: string;
   private timeoutMs: number;
 
-  constructor(opts: { baseUrl?: string; apiKey?: string; timeoutMs?: number } = {}) {
+  constructor(
+    opts: { baseUrl?: string; apiKey?: string; pomeriumToken?: string; timeoutMs?: number } = {},
+  ) {
     this.base = (opts.baseUrl ?? "https://mail-sniff.apps.iv1.in").replace(/\/+$/, "");
     this.apiKey = opts.apiKey;
+    // Pomerium service-account JWT: gets a machine client through the proxy
+    // with no route change. Ask whoever runs pomerium.iv1.in to issue one.
+    this.pomeriumToken = opts.pomeriumToken;
     // a domain takes 40-155s on a small instance; a cold start adds more
     this.timeoutMs = opts.timeoutMs ?? 300_000;
   }
@@ -53,7 +59,9 @@ export class MailSniff {
       res = await fetch(url, {
         method,
         headers: {
+          // the app's own check; Authorization is left for the proxy
           ...(this.apiKey ? { "X-API-Key": this.apiKey } : {}),
+          ...(this.pomeriumToken ? { Authorization: `Pomerium ${this.pomeriumToken}` } : {}),
           ...(body ? { "Content-Type": "application/json" } : {}),
         },
         body: body ? JSON.stringify(body) : undefined,
@@ -66,9 +74,10 @@ export class MailSniff {
 
     if (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400)) {
       throw new NotAuthenticated(
-        `${url} redirected to a login page. This host is behind an SSO proxy, so ` +
-          `it cannot be called with an API key until the /api/v1 route is allowed ` +
-          `through. See deploy/pomerium-route.yaml.`,
+        `${url} redirected to a login page. This host is behind Pomerium SSO. ` +
+          (this.pomeriumToken
+            ? `A Pomerium token was sent but the proxy rejected it: it may be expired, or lack access to this route.`
+            : `Supply a Pomerium service-account token (pomeriumToken) which needs no route change, or have /api/ allowed through the proxy. See deploy/README.md.`),
       );
     }
     if (res.status === 401 || res.status === 403) {

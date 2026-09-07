@@ -4,37 +4,37 @@ Interactive docs: **`/docs`** · schema: **`/openapi.json`**
 
 ## Base URL
 
-There are two deployments, and they behave differently:
-
-| Host | Use it for | Machine-callable today |
-|---|---|---|
-| `https://mail-sniff.apps.iv1.in` | the internal UI, SSO login with your invideo account | **No, see below** |
-| `https://mail-sniff.onrender.com` | API calls right now | Yes |
-
-### The internal host is behind SSO
-
-`mail-sniff.apps.iv1.in` sits behind Pomerium. Every request that is not already
-carrying an SSO session gets a `302` to `pomerium.iv1.in`, so an API client
-receives an HTML login page instead of JSON. Measured 2026-09-07: only `/healthz`
-(answered by Envoy, not by Mail Sniff) returns 200; `/api/v1/health`, `/api/v1/find`,
-`/docs` and `/openapi.json` all return 302. Sending `X-API-Key` makes no
-difference, because the proxy rejects the request before the app ever sees it.
-
-**To make the internal host callable**, someone with access to the Pomerium config
-applies `deploy/pomerium-route.yaml`: it lets `/api/` through unauthenticated at
-the proxy and has the app require `MAILSNIFF_API_KEY` instead, while the UI stays
-behind SSO. The alternative in that file is a Pomerium service-account JWT, which
-needs no proxy change but has to be provisioned and rotated.
-
-Until that lands, point clients at the Render host.
-
-```bash
-curl -H "X-API-Key: $MAILSNIFF_API_KEY" \
-  "https://mail-sniff.onrender.com/api/v1/health"
+```
+https://mail-sniff.apps.iv1.in
 ```
 
-Expect `{"ok":true,...,"auth":{"open_to_anyone":false}}`. If `open_to_anyone` is
-`true`, no key is set and anyone with the URL can run scans.
+Hosted on the company server. Web UI at the root, this API under `/api/v1`,
+interactive docs at `/docs`.
+
+### One thing to sort out first: the API is behind SSO
+
+The host sits behind Pomerium, which redirects any request without an SSO
+session to `pomerium.iv1.in`. A browser is fine. An API client gets an HTML
+login page instead of JSON. Verified against the live host: `/api/v1/health`,
+`/api/v1/find`, `/api/v1/whoami`, `/docs` and `/openapi.json` all return `302`.
+Only `/healthz` returns 200, and that is Envoy answering rather than Mail Sniff.
+Sending `X-API-Key` changes nothing, because the proxy rejects the request
+before the app ever sees it.
+
+Two fixes, and **the first needs no infrastructure change**:
+
+1. **A Pomerium service-account token.** Whoever runs `pomerium.iv1.in` issues
+   one for this route; clients send `Authorization: Pomerium <jwt>` and the proxy
+   lets them through. Both clients in `clients/` support it.
+2. **Let `/api/` through the proxy** and have the app's `MAILSNIFF_API_KEY` guard
+   it instead, with the UI still behind SSO. Config in `deploy/pomerium-route.yaml`.
+
+Trade-offs and env vars: **[deploy/README.md](deploy/README.md)**. Check where it
+stands at any time:
+
+```bash
+./deploy/selfcheck.sh https://mail-sniff.apps.iv1.in
+```
 
 ## Auth
 
@@ -56,7 +56,7 @@ Checked in this order:
 quickest way to debug a client:
 
 ```bash
-curl -H "X-API-Key: $MAILSNIFF_API_KEY" https://mail-sniff.onrender.com/api/v1/whoami
+curl -H "X-API-Key: $MAILSNIFF_API_KEY" https://mail-sniff.apps.iv1.in/api/v1/whoami
 # {"authorized_as":"api_key","proxy_headers_seen":[]}
 ```
 
@@ -73,7 +73,7 @@ if they hit an SSO wall, instead of handing you back HTML.
 
 ```python
 from mailsniff import MailSniff
-ms = MailSniff(base_url="https://mail-sniff.onrender.com", api_key=KEY)
+ms = MailSniff(base_url="https://mail-sniff.apps.iv1.in", api_key=KEY)
 print(ms.find("invideo.io")["all_emails"])
 print(ms.find_many(["a.com", "b.com"]))     # batch, keeps input order
 ```
@@ -81,38 +81,36 @@ print(ms.find_many(["a.com", "b.com"]))     # batch, keeps input order
 Do not put the key in browser code: it would ship to every visitor. Call it from
 your backend.
 
-## Running it live on Render
+## Running it on the company server
 
-Set these under the service's **Environment** tab, then redeploy:
+Environment, set on the deployment:
 
 | Variable | Why |
 |---|---|
-| `MAILSNIFF_API_KEY` | Required. Without it your endpoint is world-callable and strangers burn your instance. |
-| `ALLOWED_ORIGINS` | `https://yourapp.com` so only your tool's browser code can call it. Defaults to `*`. |
+| `MAILSNIFF_TRUST_PROXY_IDENTITY=1` | The app is behind Pomerium. Accepts the forwarded SSO identity, and makes the app refuse anything with neither identity nor key. |
+| `MAILSNIFF_API_KEY` | Needed for machine clients, and required if `/api/` is opened at the proxy. |
+| `ALLOWED_ORIGINS` | Your tool's origin, so any site's browser code cannot call it. Defaults to `*`. |
 
-Three things about the **free** tier that affect an API consumer:
+Two behaviours worth knowing as an API consumer:
 
-1. **It sleeps after about 15 minutes idle.** The next request waits 30 to 60
-   seconds while it wakes. Your tool must use a generous timeout, or keep the
-   service warm by pinging `/api/v1/health` every 10 minutes from a free cron
-   (cron-job.org). Render's Starter plan removes the sleeping.
-2. **Jobs live in memory.** A sleep or redeploy discards job IDs, so a
-   `/api/job/{id}` poll can 404 mid-batch. For long lists, either chunk into
-   synchronous calls of 10 or expect to retry.
-3. **Scraping runs from a datacenter IP,** which more sites block than a home
-   connection. If the live hit rate is noticeably worse than local, that is why,
-   and the fix is a proxy rather than a code change.
+1. **Speed.** 15 to 60 seconds per domain, 5 in parallel, up to 10 domains per
+   synchronous call. Set a client timeout of at least 120s. `GET /api/v1/health`
+   reports the live figures under `config`; `small_host: false` confirms it is
+   not throttling itself.
+2. **Jobs live in memory.** A restart or redeploy discards job IDs, so a
+   `/api/job/{id}` poll can 404 mid-batch. For long lists either chunk into
+   synchronous calls of 10, or be ready to retry.
 
 ## Examples
 
 curl:
 
 ```bash
-curl "https://mail-sniff.onrender.com/api/v1/find?domain=invideo.io"
+curl "https://mail-sniff.apps.iv1.in/api/v1/find?domain=invideo.io"
 ```
 
 ```bash
-curl -X POST https://mail-sniff.onrender.com/api/v1/find \
+curl -X POST https://mail-sniff.apps.iv1.in/api/v1/find \
   -H 'Content-Type: application/json' \
   -H 'X-API-Key: your-key' \
   -d '{"domains":["invideo.io","ahrefs.com"],"include_people":true}'
@@ -124,7 +122,7 @@ Python:
 import requests
 
 r = requests.post(
-    "https://mail-sniff.onrender.com/api/v1/find",
+    "https://mail-sniff.apps.iv1.in/api/v1/find",
     json={"domains": ["invideo.io", "ahrefs.com"]},
     headers={"X-API-Key": "your-key"},
     timeout=300,
@@ -139,7 +137,7 @@ for row in r.json()["results"]:
 JavaScript:
 
 ```js
-const res = await fetch("https://mail-sniff.onrender.com/api/v1/find", {
+const res = await fetch("https://mail-sniff.apps.iv1.in/api/v1/find", {
   method: "POST",
   headers: { "Content-Type": "application/json", "X-API-Key": "your-key" },
   body: JSON.stringify({ domains: ["invideo.io"] }),
@@ -151,10 +149,10 @@ console.log(results[0].all_emails);
 Large batches (over 10 domains) use the async pair:
 
 ```bash
-JOB=$(curl -s -X POST https://mail-sniff.onrender.com/api/find \
+JOB=$(curl -s -X POST https://mail-sniff.apps.iv1.in/api/find \
   -H 'Content-Type: application/json' \
   -d '{"domains":["a.com","b.com","c.com"]}' | jq -r .job_id)
-curl -s "https://mail-sniff.onrender.com/api/job/$JOB" | jq '{done,total,running}'
+curl -s "https://mail-sniff.apps.iv1.in/api/job/$JOB" | jq '{done,total,running}'
 ```
 
 Poll until `running` is false. CSV and XLSX exports are at

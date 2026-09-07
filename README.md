@@ -8,15 +8,14 @@ at a site when you only have the domain.
 
 ## Live
 
-| | |
-|---|---|
-| **https://mail-sniff.apps.iv1.in** | internal, SSO login with your invideo account. Use this one. |
-| **https://mail-sniff.onrender.com** | the API host, callable with a key. |
+**https://mail-sniff.apps.iv1.in** - on the company server, SSO login with your
+invideo account. UI at the root, REST API under `/api/v1`, docs at `/docs`.
 
-The internal host is behind Pomerium, so it serves the UI to a logged-in browser
-but 302s API clients to a login page. `deploy/pomerium-route.yaml` has the route
-change that makes `/api/` callable there; until it is applied, point API clients
-at the Render host. Details in **[API.md](API.md)**.
+API clients need one more step: the host is behind Pomerium, which 302s anything
+without an SSO session, so a machine caller receives a login page rather than
+JSON. Either use a Pomerium service-account token (no infra change) or let
+`/api/` through the proxy. See **[deploy/README.md](deploy/README.md)**, and run
+`./deploy/selfcheck.sh` to see where it stands.
 
 ## Run it locally
 
@@ -29,8 +28,8 @@ Use a different port with `PORT=8200 ./run.sh`.
 
 ## Deploy
 
-Docker, deployed on Render from `main` (`Dockerfile` + `render.yaml`, autodeploy on
-push). Environment variables:
+Single container from this repo's `Dockerfile`, listening on `$PORT` (default 8100).
+No database, no state beyond in-memory jobs. Environment variables:
 
 | Variable | Purpose |
 |---|---|
@@ -86,7 +85,7 @@ Synchronous JSON endpoints, interactive docs at `/docs`:
 
 ```bash
 curl -H "X-API-Key: $MAILSNIFF_API_KEY" \
-  "https://mail-sniff.onrender.com/api/v1/find?domain=invideo.io"
+  "https://mail-sniff.apps.iv1.in/api/v1/find?domain=invideo.io"
 ```
 
 Full reference in **[API.md](API.md)**, including auth, batching and the

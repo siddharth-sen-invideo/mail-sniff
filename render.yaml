@@ -1,4 +1,6 @@
-# Render Blueprint. On render.com: New + -> Blueprint -> pick this repo.
+# NOT the live deployment. Mail Sniff runs on the company server at
+# https://mail-sniff.apps.iv1.in (see deploy/README.md). This Blueprint is
+# kept only as a fallback for standing the app up somewhere quickly.
 services:
   - type: web
     name: mail-sniff

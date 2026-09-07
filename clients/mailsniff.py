@@ -2,13 +2,15 @@
 Mail Sniff API client.
 
     from mailsniff import MailSniff
-    ms = MailSniff()                      # reads MAILSNIFF_URL + MAILSNIFF_API_KEY
+    ms = MailSniff()                      # https://mail-sniff.apps.iv1.in
+                                          # env: MAILSNIFF_URL, MAILSNIFF_API_KEY,
+                                          #      MAILSNIFF_POMERIUM_TOKEN
     print(ms.find("invideo.io"))
     print(ms.find_many(["a.com", "b.com"]))       # async job, polls to completion
     print(ms.verify("hello@invideo.io"))
 
 Only dependency is requests. Timeouts default high on purpose: a domain takes
-40-155s on a small instance, and a sleeping free-tier host adds a cold start.
+15-60s on the company server, and a cold container adds to the first call.
 """
 from __future__ import annotations
 
@@ -19,6 +21,12 @@ from typing import Any, Dict, List, Optional
 import requests
 
 DEFAULT_URL = os.environ.get("MAILSNIFF_URL", "https://mail-sniff.apps.iv1.in").rstrip("/")
+
+# The host sits behind Pomerium. A service-account JWT is what gets a machine
+# client through the proxy without changing any route: Pomerium validates it,
+# then forwards the identity to the app. Ask whoever runs pomerium.iv1.in to
+# issue one, and put it in MAILSNIFF_POMERIUM_TOKEN.
+DEFAULT_POMERIUM_TOKEN = os.environ.get("MAILSNIFF_POMERIUM_TOKEN")
 
 
 class MailSniffError(RuntimeError):
@@ -31,13 +39,18 @@ class NotAuthenticated(MailSniffError):
 
 class MailSniff:
     def __init__(self, base_url: Optional[str] = None, api_key: Optional[str] = None,
-                 timeout: int = 300):
+                 pomerium_token: Optional[str] = None, timeout: int = 300):
         self.base = (base_url or DEFAULT_URL).rstrip("/")
         self.key = api_key if api_key is not None else os.environ.get("MAILSNIFF_API_KEY")
+        self.pomerium = (pomerium_token if pomerium_token is not None
+                         else DEFAULT_POMERIUM_TOKEN)
         self.timeout = timeout
         self.s = requests.Session()
         if self.key:
+            # the app's own check; kept out of Authorization, which the proxy uses
             self.s.headers["X-API-Key"] = self.key
+        if self.pomerium:
+            self.s.headers["Authorization"] = "Pomerium " + self.pomerium
 
     # ---- plumbing -------------------------------------------------------
     def _call(self, method: str, path: str, **kw) -> Any:
@@ -47,11 +60,15 @@ class MailSniff:
         r = self.s.request(method, url, **kw)
 
         if r.status_code in (301, 302, 303, 307, 308):
+            hint = ("Supply a Pomerium service-account token (pomerium_token= or "
+                    "MAILSNIFF_POMERIUM_TOKEN) which needs no route change, or "
+                    "have /api/ allowed through the proxy. See deploy/README.md."
+                    if not self.pomerium else
+                    "A Pomerium token was sent but the proxy still rejected it: "
+                    "it may be expired, or lack access to this route.")
             raise NotAuthenticated(
-                "%s redirected to %r. This host is behind an SSO proxy, so it "
-                "cannot be called with an API key until the /api/v1 route is "
-                "allowed through. See deploy/pomerium-route.yaml."
-                % (url, (r.headers.get("location") or "")[:80]))
+                "%s redirected to %r. This host is behind Pomerium SSO. %s"
+                % (url, (r.headers.get("location") or "")[:80], hint))
         if r.status_code in (401, 403):
             raise NotAuthenticated("%s returned %s: %s"
                                    % (url, r.status_code, r.text[:200]))
