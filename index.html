@@ -301,6 +301,7 @@ z"/></svg>
       <h2>Results</h2><span class="n" id="resCount"></span>
       <input class="search" id="search" placeholder="Filter by domain or email"/>
       <button class="btn-sec" id="copy">Copy table</button>
+      <button class="btn-sec" id="copyrows">Copy one row per email</button>
       <button class="btn-sec" id="csv">Export CSV</button>
       <button class="btn-sec" id="xlsx">Export Excel</button>
     </div>
@@ -418,6 +419,49 @@ function petReact(n){
     ],{duration:620,easing:"ease-in-out"});
   }
 }
+function clipboard(text,btn,label){
+  const done=()=>{btn.textContent="Copied \u2713"; setTimeout(()=>btn.textContent=label,1500);};
+  const fallback=()=>{const t=document.createElement("textarea");t.value=text;t.style.position="fixed";t.style.opacity="0";
+    document.body.appendChild(t);t.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(t);done();};
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(done).catch(fallback);
+  }else fallback();
+}
+
+/* One row per email. The name comes from a person we actually matched to that
+   address, never from guessing at the local part. LinkedIn is the domain's one
+   decision-maker profile, so it repeats down the rows of that domain. */
+function copyPerEmail(){
+  if(!lastResults.length)return;
+  const head=["Domain","Email","Name","Title","Sourcing","LinkedIn"];
+  const rows=[];
+  lastResults.forEach(r=>{
+    const li=(r.linkedin&&r.linkedin.url)?r.linkedin.url:"";
+    const people=r.people||[];
+    const byEmail={};
+    // people arrive best-first, so the first claim on an address wins
+    people.forEach(p=>{ const k=(p.email||"").toLowerCase();
+      if(k&&!byEmail[k]) byEmail[k]={name:p.name||"",title:p.title||"",status:p.status||""}; });
+    const seen={};
+    const push=(email,name,title,status)=>{
+      const k=(email||"").toLowerCase();
+      if(!k||seen[k])return;
+      seen[k]=1;
+      rows.push([r.domain,email,name||"",title||"",status||"",li].join("\t"));
+    };
+    (r.emails||[]).forEach(e=>{
+      const m=byEmail[(e.email||"").toLowerCase()]||{};
+      // a generated address carries its tier as the label; anything else came
+      // off the site itself, so it is scraped
+      const tier=(e.label==="likely"||e.label==="guess")?e.label:"scraped";
+      push(e.email,m.name,m.title||e.title,m.status||tier);
+    });
+    people.forEach(p=>{ if(p.email) push(p.email,p.name,p.title,p.status); });
+    if(!Object.keys(seen).length) rows.push([r.domain,"email not found","","","",li].join("\t"));
+  });
+  clipboard([head.join("\t"),...rows].join("\n"),$("#copyrows"),"Copy one row per email");
+}
+
 function copyTable(){
   if(!lastResults.length)return;
   const head=["Domain","People","Emails","Names","Designation","LinkedIn","Confidence"];
@@ -428,13 +472,7 @@ function copyTable(){
     const ppl=(r.people||[]).map(p=>[p.name,p.title,p.email,(p.status||"").toUpperCase()].filter(Boolean).join(" | ")).join(" ;; ");
     return [r.domain,ppl,emails,(r.names||[]).join(", "),(r.designations||[]).join(", "),li,(CL[r.confidence]||"Not found")].join("\t");
   });
-  const tsv=[head.join("\t"),...rows].join("\n");
-  const done=()=>{const b=$("#copy"); b.textContent="Copied ✓"; setTimeout(()=>b.textContent="Copy table",1500);};
-  const fallback=()=>{const t=document.createElement("textarea");t.value=tsv;t.style.position="fixed";t.style.opacity="0";
-    document.body.appendChild(t);t.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(t);done();};
-  if(navigator.clipboard&&navigator.clipboard.writeText){
-    navigator.clipboard.writeText(tsv).then(done).catch(fallback);
-  }else fallback();
+  clipboard([head.join("\t"),...rows].join("\n"),$("#copy"),"Copy table");
 }
 
 function domainList(){return ta.value.split(/[\n,]+/).map(s=>s.trim()).filter(Boolean);}
@@ -605,6 +643,7 @@ function render(){
 $("#search").addEventListener("input",render);
 $("#go").addEventListener("click",start);
 $("#copy").addEventListener("click",copyTable);
+$("#copyrows").addEventListener("click",copyPerEmail);
 $("#csv").addEventListener("click",()=>jobId&&(location.href="/api/job/"+jobId+"/export.csv"));
 $("#xlsx").addEventListener("click",()=>jobId&&(location.href="/api/job/"+jobId+"/export.xlsx"));
 ta.addEventListener("keydown",e=>{if((e.metaKey||e.ctrlKey)&&e.key==="Enter")start();});
