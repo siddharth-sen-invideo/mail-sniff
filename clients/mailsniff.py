@@ -7,6 +7,7 @@ Mail Sniff API client.
                                           #      MAILSNIFF_POMERIUM_TOKEN
     print(ms.find("invideo.io"))
     print(ms.find_many(["a.com", "b.com"]))       # async job, polls to completion
+    jid = ms.submit(big_list, webhook_url="https://mytool/hook")   # or fire-and-forget
     print(ms.verify("hello@invideo.io"))
 
 Only dependency is requests. Timeouts default high on purpose: a domain takes
@@ -89,29 +90,61 @@ class MailSniff:
         """Says whether the call was authorized by key, SSO or open mode."""
         return self._call("GET", "/api/v1/whoami")
 
-    def find(self, domain: str, include_people: bool = True) -> Dict[str, Any]:
+    def find(self, domain: str, include_people: bool = True,
+             fresh: bool = False) -> Dict[str, Any]:
+        """One domain. Instant when the cache has it; pass fresh=True to re-scan."""
         return self._call("GET", "/api/v1/find",
-                          params={"domain": domain, "include_people": include_people})["result"]
+                          params={"domain": domain, "include_people": include_people,
+                                  "fresh": fresh})["result"]
 
     def verify(self, email: str) -> Dict[str, Any]:
         return self._call("GET", "/api/v1/verify", params={"email": email})
 
+    # ---- batches ---------------------------------------------------------
+    def submit(self, domains: List[str], include_people: bool = True,
+               webhook_url: Optional[str] = None) -> str:
+        """Queue a batch and return its id immediately. Jobs survive a restart."""
+        body: Dict[str, Any] = {"domains": list(domains),
+                                "include_people": include_people}
+        if webhook_url:
+            body["webhook_url"] = webhook_url
+        return self._call("POST", "/api/v1/jobs", json=body)["job_id"]
+
+    def job(self, job_id: str) -> Dict[str, Any]:
+        """Status plus whatever results have landed, in input order."""
+        return self._call("GET", "/api/v1/jobs/%s" % job_id)
+
+    def jobs(self, limit: int = 25) -> List[Dict[str, Any]]:
+        return self._call("GET", "/api/v1/jobs", params={"limit": limit})["jobs"]
+
+    def delete_job(self, job_id: str) -> Dict[str, Any]:
+        return self._call("DELETE", "/api/v1/jobs/%s" % job_id)
+
     def find_many(self, domains: List[str], poll: float = 5.0,
                   max_wait: float = 3600.0) -> List[Dict[str, Any]]:
-        """Batch scan via the async job endpoints, which is the right path for
-        more than a couple of domains: results keep the input order."""
+        """Submit a batch and block until it finishes. Give a webhook_url to
+        submit() instead if you would rather not hold a connection open."""
         if not domains:
             return []
-        job = self._call("POST", "/api/find", json={"domains": list(domains)})
-        job_id = job["job_id"]
+        job_id = self.submit(domains)
         waited = 0.0
         while waited < max_wait:
-            st = self._call("GET", "/api/job/%s" % job_id)
-            if not st.get("running"):
+            st = self.job(job_id)
+            if st["status"] in ("done", "failed"):
+                if st["status"] == "failed":
+                    raise MailSniffError("job %s failed: %s" % (job_id, st.get("error")))
                 return st["results"]
             time.sleep(poll)
             waited += poll
         raise MailSniffError("job %s still running after %ss" % (job_id, max_wait))
+
+    # ---- cache -----------------------------------------------------------
+    def cache_stats(self) -> Dict[str, Any]:
+        return self._call("GET", "/api/v1/cache")
+
+    def clear_cache(self, domain: Optional[str] = None) -> Dict[str, Any]:
+        return self._call("DELETE", "/api/v1/cache",
+                          params={"domain": domain} if domain else None)
 
 
 if __name__ == "__main__":

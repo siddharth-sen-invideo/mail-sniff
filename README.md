@@ -109,6 +109,9 @@ claude mcp add mail-sniff -- "$(pwd)/mcp_run.sh"
 | `server.py` | FastAPI backend (jobs, live status, CSV/XLSX export) |
 | `index.html` | the whole UI (single file, no build step) |
 | `runner.py` | shared concurrency, timeouts and result shaping (one source of truth) |
+| `store.py` | SQLite result cache + durable job queue |
+| `jobs.py` | background worker, webhooks |
+| `auth.py` | per-tool API keys, rate limiting |
 | `api.py` | REST API v1 |
 | `mcp_server.py` | MCP stdio server |
 | `people.py` | name extraction + email-pattern inference |

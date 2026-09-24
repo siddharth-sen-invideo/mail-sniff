@@ -4,3 +4,8 @@ __pycache__/
 *.db
 backups/
 .DS_Store
+
+# local API store (cache + jobs)
+mailsniff.db
+mailsniff.db-wal
+mailsniff.db-shm

@@ -41,7 +41,16 @@ stands at any time:
 Checked in this order:
 
 1. **API key** - `X-API-Key: <key>` or `Authorization: Bearer <key>`, compared in
-   constant time. Set `MAILSNIFF_API_KEY` to turn it on.
+   constant time. `MAILSNIFF_API_KEY` takes a comma-separated list, and each
+   entry may be `name:key`, so every tool gets its own credential:
+
+   ```
+   MAILSNIFF_API_KEY="rankfuel:s3cr3t...,citations:0th3r..."
+   ```
+
+   The name appears in `/whoami`, on the jobs you submit, and in the rate
+   limiter, so one tool cannot spend another's budget. A single bare key still
+   works.
 2. **Proxy identity** - with `MAILSNIFF_TRUST_PROXY_IDENTITY=1`, a request
    carrying Pomerium's `X-Pomerium-Jwt-Assertion` / `X-Pomerium-Claim-Email` is
    already SSO-authenticated and is allowed through. Enabling this also means an
@@ -59,6 +68,67 @@ quickest way to debug a client:
 curl -H "X-API-Key: $MAILSNIFF_API_KEY" https://mail-sniff.apps.iv1.in/api/v1/whoami
 # {"authorized_as":"api_key","proxy_headers_seen":[]}
 ```
+
+## Rate limits
+
+`MAILSNIFF_RATE_LIMIT` requests per minute per credential (default 120, `0`
+disables). Over the limit you get `429` with a `Retry-After` header. Budgets are
+per key, so a runaway loop in one tool does not starve the others.
+
+## Batches: the job API
+
+Anything past a few domains goes here. Jobs are stored in SQLite, not in memory,
+so **a restart or redeploy resumes them** instead of losing the id you are
+polling, and each domain's result is written the moment it lands.
+
+```bash
+# submit (returns 202 immediately, up to 500 domains)
+curl -X POST https://mail-sniff.apps.iv1.in/api/v1/jobs \
+  -H "X-API-Key: $KEY" -H 'Content-Type: application/json' \
+  -d '{"domains":["a.com","b.com"],"webhook_url":"https://mytool/hook"}'
+# -> {"job_id":"7f3c...","status":"queued","total":2,"poll":"/api/v1/jobs/7f3c..."}
+
+curl -H "X-API-Key: $KEY" https://mail-sniff.apps.iv1.in/api/v1/jobs/7f3c...
+```
+
+| Endpoint | Does |
+|---|---|
+| `POST /api/v1/jobs` | queue a batch, optional `webhook_url` |
+| `GET /api/v1/jobs/{id}` | status plus partial results, in input order |
+| `GET /api/v1/jobs` | your recent jobs |
+| `DELETE /api/v1/jobs/{id}` | drop one |
+
+`status` is `queued`, `running`, `done` or `failed`. `results` is the full array
+from the start, with `null` where a domain has not finished, so you can stream
+progress rather than waiting for the whole batch.
+
+### Webhooks
+
+Give a `webhook_url` and the finished job is POSTed to it, so you never poll:
+
+```json
+{"job_id":"7f3c...","status":"done","done":2,"total":2,"results":[...]}
+```
+
+Retried three times with backoff; the outcome is on the job as
+`webhook_status`. A non-2xx or an unreachable host does not fail the job.
+
+The server makes this request, so callback URLs pointing at private, loopback or
+link-local addresses are **refused with 400** to avoid an SSRF hole. If your tool
+is internal, set `MAILSNIFF_WEBHOOK_ALLOW_PRIVATE=1` on the deployment.
+
+## Caching
+
+Results are cached per domain for `MAILSNIFF_CACHE_TTL_DAYS` (default 7). A
+contact page does not change hourly, and re-scraping every call was the biggest
+waste for a tool that looks up the same domains repeatedly. Measured: a first
+lookup of `growthlens.co` took **18 seconds**, the second took **0**.
+
+Every result carries `cached` (and `cached_age_s` when true), so you always know
+what you are looking at. Jobs use the cache too.
+
+- `fresh=true` on `/find` bypasses it for that call
+- `GET /api/v1/cache` for stats, `DELETE /api/v1/cache?domain=x.com` to drop one
 
 ## Clients
 

@@ -11,6 +11,11 @@ restarting. The company deployment builds from this repo's Dockerfile.
 | `MAILSNIFF_TRUST_PROXY_IDENTITY` | `1` | The app is behind Pomerium. This accepts the SSO identity the proxy forwards, and makes the app **refuse** any request that arrives with neither an identity nor a key. |
 | `MAILSNIFF_API_KEY` | a long random string | Needed for machine clients. Required if `/api/` is ever made public at the proxy. |
 | `ALLOWED_ORIGINS` | `https://mail-sniff.apps.iv1.in` | CORS. Leaving it `*` lets any site's browser code call the API. |
+| `MAILSNIFF_API_KEY` | `toolname:key,other:key2` | One credential per consuming tool. Names show up in `/whoami`, on jobs and in the rate limiter. |
+| `MAILSNIFF_RATE_LIMIT` | `120` | Requests per minute per credential. `0` disables. |
+| `MAILSNIFF_DB` | a path on a **persistent volume** | Cache and jobs live here. See below. |
+| `MAILSNIFF_CACHE_TTL_DAYS` | `7` | How long a domain's result stays fresh. |
+| `MAILSNIFF_WEBHOOK_ALLOW_PRIVATE` | `1` if your callback host is internal | Callbacks to private addresses are refused by default to avoid SSRF. |
 | `MAILSNIFF_CONCURRENCY` etc. | leave unset | The defaults suit a real CPU. See below. |
 
 `MAILSNIFF_TRUST_PROXY_IDENTITY` treats Pomerium's `X-Pomerium-Jwt-Assertion` /
@@ -32,6 +37,17 @@ than guessing. Override with `MAILSNIFF_CONCURRENCY`, `MAILSNIFF_MAX_PAGES`,
 
 It is CPU-bound on HTML parsing and network-bound on fetches, so give it 1 CPU
 and 512Mi and it will comfortably beat the free-tier numbers above.
+
+## Storage
+
+`MAILSNIFF_DB` (default `mailsniff.db` next to the code) is a SQLite file holding
+the result cache and the job queue. **Put it on a persistent volume.** On
+ephemeral disk the app still works, but every redeploy throws away the cache and
+every queued job, which is most of the point of having them.
+
+Jobs left mid-flight when a container dies are requeued at the next boot, and the
+per-domain results already written are kept, so a redeploy costs you the domains
+still in flight rather than the whole batch.
 
 ## The API is not reachable yet, and why
 

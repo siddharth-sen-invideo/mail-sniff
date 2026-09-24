@@ -16,7 +16,9 @@ from pydantic import BaseModel
 
 import api
 import finder
+import jobs
 import runner
+import store
 
 app = FastAPI(
     title="Mail Sniff",
@@ -33,6 +35,17 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"], allow_headers=["*"],
 )
 app.include_router(api.router)
+
+
+@app.on_event("startup")
+async def _startup():
+    store.init()
+    jobs.start()          # resumes anything a restart interrupted
+
+
+@app.on_event("shutdown")
+async def _shutdown():
+    jobs.stop()
 
 HERE = Path(__file__).parent
 app.mount("/fonts", StaticFiles(directory=str(HERE / "fonts")), name="fonts")

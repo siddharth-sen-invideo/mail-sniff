@@ -4,6 +4,7 @@
  *   const ms = new MailSniff({ baseUrl: "https://mail-sniff.apps.iv1.in", apiKey: process.env.MAILSNIFF_API_KEY });
  *   await ms.find("invideo.io");
  *   await ms.findMany(["a.com", "b.com"]);   // async job, polled
+ *   await ms.submit(bigList, { webhookUrl: "https://mytool/hook" });  // fire-and-forget
  *   await ms.verify("hello@invideo.io");
  *
  * Never call this from browser code with a real key in it: the key would ship
@@ -27,6 +28,27 @@ export interface FindResult {
   linkedin: { url?: string; name?: string; role?: string; guess?: boolean } | null;
   confidence: "high" | "medium" | "low" | "none" | null;
   note: string | null;
+}
+
+export interface JobStatus {
+  job_id: string;
+  status: "queued" | "running" | "done" | "failed";
+  done: number;
+  total: number;
+  found: number;
+  webhook_status: string | null;
+  error: string | null;
+  results: (FindResult | null)[];
+}
+
+export interface JobSummary {
+  id: string;
+  status: string;
+  created_at: number;
+  updated_at: number;
+  done: number;
+  total: number;
+  owner: string | null;
 }
 
 export class NotAuthenticated extends Error {}
@@ -103,8 +125,13 @@ export class MailSniff {
     return this.call<{ authorized_as: string; proxy_headers_seen: string[] }>("GET", "/api/v1/whoami");
   }
 
-  async find(domain: string, includePeople = true): Promise<FindResult> {
-    const q = new URLSearchParams({ domain, include_people: String(includePeople) });
+  /** One domain. Instant when the cache has it; pass fresh to re-scan. */
+  async find(domain: string, includePeople = true, fresh = false): Promise<FindResult> {
+    const q = new URLSearchParams({
+      domain,
+      include_people: String(includePeople),
+      fresh: String(fresh),
+    });
     const r = await this.call<{ result: FindResult }>("GET", `/api/v1/find?${q}`);
     return r.result;
   }
@@ -114,19 +141,53 @@ export class MailSniff {
     return this.call<Record<string, unknown>>("GET", `/api/v1/verify?${q}`);
   }
 
-  /** Batch scan through the async job endpoints. Results keep the input order. */
+  /** Queue a batch and get its id straight away. Jobs survive a restart. */
+  async submit(
+    domains: string[],
+    opts: { includePeople?: boolean; webhookUrl?: string } = {},
+  ): Promise<string> {
+    const r = await this.call<{ job_id: string }>("POST", "/api/v1/jobs", {
+      domains,
+      include_people: opts.includePeople ?? true,
+      ...(opts.webhookUrl ? { webhook_url: opts.webhookUrl } : {}),
+    });
+    return r.job_id;
+  }
+
+  /** Status plus whatever results have landed, in input order. */
+  job(jobId: string) {
+    return this.call<JobStatus>("GET", `/api/v1/jobs/${jobId}`);
+  }
+
+  async jobs(limit = 25) {
+    const r = await this.call<{ jobs: JobSummary[] }>("GET", `/api/v1/jobs?limit=${limit}`);
+    return r.jobs;
+  }
+
+  deleteJob(jobId: string) {
+    return this.call<{ deleted: string }>("DELETE", `/api/v1/jobs/${jobId}`);
+  }
+
+  /** Submit a batch and wait for it. Prefer submit() with a webhook for long lists. */
   async findMany(domains: string[], pollMs = 5000, maxWaitMs = 3_600_000): Promise<FindResult[]> {
     if (domains.length === 0) return [];
-    const job = await this.call<{ job_id: string }>("POST", "/api/find", { domains });
+    const jobId = await this.submit(domains);
     const deadline = Date.now() + maxWaitMs;
     while (Date.now() < deadline) {
-      const st = await this.call<{ running: boolean; results: FindResult[] }>(
-        "GET",
-        `/api/job/${job.job_id}`,
-      );
-      if (!st.running) return st.results;
+      const st = await this.job(jobId);
+      if (st.status === "failed") throw new MailSniffError(`job ${jobId} failed: ${st.error}`);
+      if (st.status === "done") return st.results.filter((r): r is FindResult => r !== null);
       await new Promise((r) => setTimeout(r, pollMs));
     }
-    throw new MailSniffError(`job ${job.job_id} still running after ${maxWaitMs}ms`);
+    throw new MailSniffError(`job ${jobId} still running after ${maxWaitMs}ms`);
+  }
+
+  cacheStats() {
+    return this.call<{ entries: number; fresh: number; ttl_days: number }>("GET", "/api/v1/cache");
+  }
+
+  clearCache(domain?: string) {
+    const q = domain ? `?domain=${encodeURIComponent(domain)}` : "";
+    return this.call<{ removed: number }>("DELETE", `/api/v1/cache${q}`);
   }
 }

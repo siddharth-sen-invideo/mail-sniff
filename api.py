@@ -25,7 +25,10 @@ from typing import List, Optional
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+import auth
+import jobs
 import runner
+import store
 
 router = APIRouter(prefix="/api/v1", tags=["Mail Sniff v1"])
 
@@ -36,13 +39,10 @@ SYNC_MAX_DOMAINS = 3 if runner.SMALL_HOST else 10
 
 
 def _flag(name: str) -> bool:
-    return (os.environ.get(name) or "").strip().lower() in ("1", "true", "yes", "on")
+    return auth.flag(name)
 
 
-# Pomerium injects these once pass_identity_headers is on. Presence alone is not
-# proof of anything unless the app is unreachable except through the proxy, which
-# is why trusting them is opt-in.
-_POMERIUM_HEADERS = ("x-pomerium-jwt-assertion", "x-pomerium-claim-email")
+_POMERIUM_HEADERS = auth._POMERIUM_HEADERS
 
 
 def _proxy_identity(request: Optional[Request]) -> Optional[str]:
@@ -57,42 +57,50 @@ def _proxy_identity(request: Optional[Request]) -> Optional[str]:
 
 def _authorize(x_api_key: Optional[str], authorization: Optional[str],
                request: Optional[Request] = None) -> str:
-    """Return how the caller was authorized, or raise 401/503."""
-    key = (os.environ.get("MAILSNIFF_API_KEY") or "").strip()
+    """Return the principal that made this call, or raise 401/429/503."""
+    principal = None
 
-    if key:
+    if auth.keys_configured():
         supplied = (x_api_key or "").strip()
         if not supplied and authorization:
             parts = authorization.split(None, 1)
             if len(parts) == 2 and parts[0].lower() == "bearer":
                 supplied = parts[1].strip()
-        if supplied and secrets.compare_digest(supplied, key):
-            return "api_key"
-        # a key is configured, so an SSO-authenticated browser still gets in
+        if supplied:
+            name = auth.match_key(supplied)
+            if name:
+                principal = "key:" + name
+        if principal is None:
+            who = _proxy_identity(request)
+            if who:
+                principal = "sso:" + who
+        if principal is None:
+            raise HTTPException(status_code=401, detail="invalid or missing API key")
+    else:
         who = _proxy_identity(request)
         if who:
-            return "sso:" + who
-        raise HTTPException(status_code=401, detail="invalid or missing API key")
+            principal = "sso:" + who
+        elif _flag("MAILSNIFF_TRUST_PROXY_IDENTITY"):
+            # Enabling proxy identity asserts that callers ARE authenticated, so
+            # never fall through to open mode: if the proxy route is ever
+            # bypassed the request must be refused rather than served.
+            raise HTTPException(
+                status_code=401,
+                detail="unauthenticated: no API key and no proxy identity headers")
+        elif _flag("MAILSNIFF_REQUIRE_KEY"):
+            raise HTTPException(
+                status_code=503,
+                detail="server misconfigured: MAILSNIFF_REQUIRE_KEY is set but "
+                       "MAILSNIFF_API_KEY is empty, so every request is refused")
+        else:
+            principal = "open"
 
-    who = _proxy_identity(request)
-    if who:
-        return "sso:" + who
-
-    # Turning on proxy identity is a statement that callers ARE authenticated,
-    # so never fall through to open mode here: a request with no key and no
-    # forwarded identity is unauthenticated, and if the proxy route is ever
-    # bypassed that request must be refused rather than served.
-    if _flag("MAILSNIFF_TRUST_PROXY_IDENTITY"):
-        raise HTTPException(
-            status_code=401,
-            detail="unauthenticated: no API key and no proxy identity headers")
-
-    if _flag("MAILSNIFF_REQUIRE_KEY"):
-        raise HTTPException(
-            status_code=503,
-            detail="server misconfigured: MAILSNIFF_REQUIRE_KEY is set but "
-                   "MAILSNIFF_API_KEY is empty, so every request is refused")
-    return "open"
+    allowed, retry = auth.rate_check(principal)
+    if not allowed:
+        raise HTTPException(status_code=429,
+                            detail="rate limit exceeded, retry in %ds" % retry,
+                            headers={"Retry-After": str(retry)})
+    return principal
 
 
 # kept so any older import path still works
@@ -100,10 +108,19 @@ def _require_key(x_api_key: Optional[str], authorization: Optional[str]) -> None
     _authorize(x_api_key, authorization, None)
 
 
+class JobBody(BaseModel):
+    domains: List[str] = Field(..., description="Domains or URLs to scan",
+                               min_items=1, max_items=500)
+    include_people: bool = Field(True, description="Include named humans")
+    webhook_url: Optional[str] = Field(
+        None, description="POSTed the finished job instead of you polling for it")
+
+
 class FindBody(BaseModel):
     domains: List[str] = Field(..., description="Domains or URLs to scan",
                                min_items=1)
     include_people: bool = Field(True, description="Include named humans and their addresses")
+    fresh: bool = Field(False, description="Ignore the cache and re-scan")
 
 
 class VerifyBody(BaseModel):
@@ -121,6 +138,26 @@ def _clean(domains) -> List[str]:
     return out
 
 
+async def _scan_cached(domains: List[str], fresh: bool = False):
+    """Serve each domain from cache when a fresh entry exists, scan the rest.
+    Results come back in the order supplied."""
+    out: List[Optional[dict]] = [None] * len(domains)
+    todo = []
+    for i, d in enumerate(domains):
+        hit = None if fresh else store.cache_get(d)
+        if hit:
+            out[i] = hit
+        else:
+            todo.append((i, d))
+    if todo:
+        scanned = await runner.run_domains([d for _, d in todo])
+        for (i, _), res in zip(todo, scanned):
+            res["cached"] = False
+            store.cache_put(res.get("domain") or domains[i], res)
+            out[i] = res
+    return [r for r in out if r is not None]
+
+
 def _strip_people(results, include_people: bool):
     if include_people:
         return results
@@ -135,14 +172,16 @@ def _strip_people(results, include_people: bool):
 async def find_one(
     domain: str = Query(..., description="A single domain, e.g. invideo.io"),
     include_people: bool = Query(True),
+    fresh: bool = Query(False, description="Ignore the cache and re-scan"),
     request: Request = None,
     x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
     authorization: Optional[str] = Header(None),
 ):
-    """Blocking scan of one domain. Typically 15 to 60 seconds, so allow a
-    generous client timeout."""
+    """Blocking scan of one domain. Typically 15 to 60 seconds on a fresh
+    domain, or instant when the cache has it, so allow a generous client
+    timeout. Pass `fresh=true` to bypass the cache."""
     _authorize(x_api_key, authorization, request)
-    results = _strip_people(await runner.run_domains(_clean([domain])), include_people)
+    results = _strip_people(await _scan_cached(_clean([domain]), fresh), include_people)
     return {"count": 1, "results": results, "result": results[0]}
 
 
@@ -154,9 +193,9 @@ async def find_many(
     authorization: Optional[str] = Header(None),
 ):
     """Blocking scan, results in the exact order supplied. For bigger batches use
-    the async job endpoints (POST /api/find, GET /api/job/{id})."""
+    the async job endpoints (POST /api/v1/jobs)."""
     _authorize(x_api_key, authorization, request)
-    results = _strip_people(await runner.run_domains(_clean(body.domains)),
+    results = _strip_people(await _scan_cached(_clean(body.domains), body.fresh),
                             body.include_people)
     return {"count": len(results),
             "with_contacts": sum(1 for r in results if r["all_emails"]),
@@ -189,12 +228,15 @@ async def verify_post(
 async def health():
     import finder
     import runner
-    has_key = bool((os.environ.get("MAILSNIFF_API_KEY") or "").strip())
+    has_key = auth.keys_configured()
     trust_proxy = _flag("MAILSNIFF_TRUST_PROXY_IDENTITY")
     return {"ok": True, "dns": finder._HAS_DNS,
             "auth_required": has_key,
             "sync_max_domains": SYNC_MAX_DOMAINS,
+            "cache": store.cache_stats(),
+            "rate_limit": {"per_min": auth.RATE_LIMIT},
             "auth": {"api_key": has_key,
+                     "key_names": auth.key_names(),
                      "proxy_identity": trust_proxy,
                      "fail_closed": _flag("MAILSNIFF_REQUIRE_KEY"),
                      # the state worth catching before anyone finds the URL
@@ -218,3 +260,101 @@ async def whoami(
     if request is not None:
         seen = [h for h in _POMERIUM_HEADERS if request.headers.get(h)]
     return {"authorized_as": how, "proxy_headers_seen": seen}
+
+
+# --------------------------------------------------------------- jobs
+@router.post("/jobs", status_code=202, summary="Submit a batch scan")
+async def job_submit(
+    body: JobBody,
+    request: Request = None,
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    authorization: Optional[str] = Header(None),
+):
+    """Queue up to 500 domains and return immediately. Poll
+    `GET /api/v1/jobs/{id}`, or give a `webhook_url` and be told when it is done.
+
+    Jobs are persisted, so a restart resumes them rather than losing the id.
+    """
+    who = _authorize(x_api_key, authorization, request)
+    domains = [str(d).strip() for d in body.domains if str(d).strip()]
+    if not domains:
+        raise HTTPException(400, "no domains supplied")
+    if body.webhook_url:
+        ok, why = jobs.webhook_url_ok(body.webhook_url)
+        if not ok:
+            raise HTTPException(400, why)
+    jid = store.job_create(domains, include_people=body.include_people,
+                           webhook=body.webhook_url, owner=who)
+    jobs.start()
+    return {"job_id": jid, "status": "queued", "total": len(domains),
+            "poll": "/api/v1/jobs/%s" % jid}
+
+
+@router.get("/jobs", summary="List recent jobs")
+async def job_index(
+    limit: int = Query(25, ge=1, le=200),
+    mine: bool = Query(True, description="Only jobs submitted with your credential"),
+    request: Request = None,
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    authorization: Optional[str] = Header(None),
+):
+    who = _authorize(x_api_key, authorization, request)
+    return {"jobs": store.job_list(limit=limit, owner=who if mine else None)}
+
+
+@router.get("/jobs/{job_id}", summary="Job status and results")
+async def job_status(
+    job_id: str,
+    request: Request = None,
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    authorization: Optional[str] = Header(None),
+):
+    _authorize(x_api_key, authorization, request)
+    job = store.job_get(job_id)
+    if not job:
+        raise HTTPException(404, "job not found")
+    results = [r for r in job["results"] if r is not None]
+    return {
+        "job_id": job["id"], "status": job["status"],
+        "done": job["done"], "total": job["total"],
+        "found": sum(1 for r in results if r.get("all_emails")),
+        "webhook_status": job["webhook_status"],
+        "error": job["error"],
+        # partial results stream out as they land, in input order
+        "results": job["results"],
+    }
+
+
+@router.delete("/jobs/{job_id}", summary="Delete a job")
+async def job_remove(
+    job_id: str,
+    request: Request = None,
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    authorization: Optional[str] = Header(None),
+):
+    _authorize(x_api_key, authorization, request)
+    if not store.job_delete(job_id):
+        raise HTTPException(404, "job not found")
+    return {"deleted": job_id}
+
+
+# --------------------------------------------------------------- cache
+@router.get("/cache", summary="Cache statistics")
+async def cache_info(
+    request: Request = None,
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    authorization: Optional[str] = Header(None),
+):
+    _authorize(x_api_key, authorization, request)
+    return store.cache_stats()
+
+
+@router.delete("/cache", summary="Drop cached results")
+async def cache_drop(
+    domain: Optional[str] = Query(None, description="One domain, or all if omitted"),
+    request: Request = None,
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    authorization: Optional[str] = Header(None),
+):
+    _authorize(x_api_key, authorization, request)
+    return {"removed": store.cache_clear(domain)}
