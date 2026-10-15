@@ -389,6 +389,19 @@ def designation_for(email: str, jsonld: dict, name_title: dict, text: str) -> st
     return ""
 
 
+def _dns_resolves(domain: str) -> bool:
+    """A domain with no address records is not 'unreachable', it is offline.
+    Saying which one saves the user checking the site by hand."""
+    import socket
+    for host in (domain, "www." + domain):
+        try:
+            socket.getaddrinfo(host, None)
+            return True
+        except Exception:
+            continue
+    return False
+
+
 def _has_mailserver(domain: str) -> bool:
     if domain in _mx_cache:
         return _mx_cache[domain]
@@ -780,7 +793,8 @@ async def _crtsh_scan(client, domain):
             for row in (r.json() or []):
                 for nv in str(row.get("name_value", "")).split("\n"):
                     nv = nv.strip().lower().lstrip("*.")
-                    if nv.endswith(domain) and nv != domain:
+                    # endswith alone also matched e.g. notplanmytech.com
+                    if nv.endswith("." + domain) and nv != domain:
                         subs.add(nv)
     except Exception:
         return {}
@@ -1115,11 +1129,24 @@ async def process_domain(client: httpx.AsyncClient, raw_domain: str) -> dict:
     if mx_targets:
         await asyncio.gather(*[asyncio.to_thread(_has_mailserver, d) for d in mx_targets])
 
-    # order: PERSON first, then role, then catch-all; same-domain then confidence
+    # WHOSE address is it, before what kind it is. A third party's address is
+    # never this site's contact, however person-shaped it looks.
+    #   0 own domain (or a subdomain of it)   1 personal on a free provider
+    #   2 foreign domain, i.e. somebody else's company
+    def relation(email: str) -> int:
+        _local, _, edom = email.partition("@")
+        edom = edom.lower()
+        d = domain.lower()
+        if edom == d or edom == "www." + d or edom.endswith("." + d) or d.endswith("." + edom):
+            return 0
+        if edom in FREE_PROVIDERS:
+            return 1
+        return 2
+
+    # order: own domain first, and within that PERSON, then role, then catch-all
     def sort_key(item):
         email, _src = item
-        local, _, edom = email.partition("@")
-        same = 0 if (edom == domain or edom == f"www.{domain}" or domain.endswith("." + edom)) else 1
+        local, _, _edom = email.partition("@")
         if local in CATCHALL_LOCALS:
             tier = 2
         elif local in ROLE_LOCALS:
@@ -1128,7 +1155,23 @@ async def process_domain(client: httpx.AsyncClient, raw_domain: str) -> dict:
             tier = 0
         level, _ = classify(email)
         rank = {"high": 0, "medium": 1, "low": 2}[level]
-        return (tier, same, rank, email)
+        # relation FIRST: ranking tier first put a stranger's person-shaped
+        # address above the site's own contact@ and pushed it out of the list
+        return (relation(email), tier, rank, email)
+
+    # An address on someone else's domain, found anywhere other than this site's
+    # own pages, belongs to a third party: a plugin vendor, an agency credit, a
+    # link on a shared social profile. Reporting it as the site's contact is
+    # worse than reporting nothing.
+    INDIRECT = ("social profile", "subdomain (", "Wayback archive", "PDF / media kit",
+                "JS bundle", "GitHub commits", "crt.sh")
+    third_party = {}
+    for e in list(emails):
+        if relation(e) == 2:
+            src = emails[e]
+            if any(src.startswith(k) for k in INDIRECT):
+                third_party[e] = src
+                del emails[e]
 
     full_text = " ".join(text_blobs)[:400000]
     ordered = sorted(emails.items(), key=sort_key)[:MAX_EMAILS_PER_DOMAIN]
@@ -1321,7 +1364,11 @@ async def process_domain(client: httpx.AsyncClient, raw_domain: str) -> dict:
 
     if not out_emails and not people:
         if not home:
-            result["note"] = "site unreachable"
+            if not await asyncio.to_thread(_dns_resolves, domain):
+                result["note"] = ("domain does not resolve (no DNS records), so "
+                                  "there is no site to read; check the domain is live")
+            else:
+                result["note"] = "site unreachable"
         elif pages and all(_is_challenge(h) for _, h in pages):
             result["note"] = "blocked by a bot challenge (needs a real browser)"
         else:
