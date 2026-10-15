@@ -169,6 +169,12 @@ def _envint(name, default):
 # seconds; bot-walled domains can't stall the whole batch. A fraction-of-a-CPU
 # host needs longer per domain but must attempt far fewer pages.
 PER_DOMAIN_BUDGET = _envint("MAILSNIFF_BUDGET", 95 if _SMALL_HOST else 55)
+# When the scrape found nothing, the people pass is the only remaining chance of
+# an answer, so it gets its own slice of the gap between this budget and the
+# caller's hard timeout. Without it a domain that is merely slow (or just
+# unlucky in a busy batch) reports "no email" while the same domain scanned
+# alone returns addresses, which makes the tool look random.
+PEOPLE_RESERVE = _envint("MAILSNIFF_PEOPLE_RESERVE", 30)
 MAX_PEOPLE_PER_DOMAIN = 8
 MAX_PAGE_FETCHES = _envint("MAILSNIFF_MAX_PAGES", 26 if _SMALL_HOST else 70)
 # regexing a 700KB page is the main CPU cost; most contact details sit well
@@ -1194,6 +1200,9 @@ async def process_domain(client: httpx.AsyncClient, raw_domain: str) -> dict:
     # emails come first: only enrich with people when real headroom remains,
     # otherwise an overshoot here loses the whole domain to a timeout
     try:
+        if not out_emails and left() < 22:
+            # nothing found yet: borrow from the headroom rather than give up
+            deadline += PEOPLE_RESERVE
         if left() < 22:
             raise TimeoutError('no budget for the people pass')
         brand = domain.split(".")[0]
