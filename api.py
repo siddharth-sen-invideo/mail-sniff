@@ -234,6 +234,7 @@ async def health():
             "auth_required": has_key,
             "sync_max_domains": SYNC_MAX_DOMAINS,
             "cache": store.cache_stats(),
+            "storage": store.status(),
             "rate_limit": {"per_min": auth.RATE_LIMIT},
             "auth": {"api_key": has_key,
                      "key_names": auth.key_names(),
@@ -276,6 +277,9 @@ async def job_submit(
     Jobs are persisted, so a restart resumes them rather than losing the id.
     """
     who = _authorize(x_api_key, authorization, request)
+    if not store.AVAILABLE:
+        raise HTTPException(503, "job storage unavailable (%s); use /api/v1/find "
+                                 "for synchronous scans" % (store.DEGRADED_REASON or "unknown"))
     domains = [str(d).strip() for d in body.domains if str(d).strip()]
     if not domains:
         raise HTTPException(400, "no domains supplied")

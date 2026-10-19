@@ -45,6 +45,14 @@ the result cache and the job queue. **Put it on a persistent volume.** On
 ephemeral disk the app still works, but every redeploy throws away the cache and
 every queued job, which is most of the point of having them.
 
+If that path is not writable (a read-only rootfs, or a non-root user against a
+root-owned image directory) the app does **not** fail: it falls back to the
+system temp directory, and then to a shared in-memory database, logging which
+one it chose. `GET /api/v1/health` reports it under `storage`, where
+`persistent: false` means the cache and jobs are memory-only. An earlier version
+raised out of the startup hook here and uvicorn exited with "Application startup
+failed", taking the site down over a cache file.
+
 Jobs left mid-flight when a container dies are requeued at the next boot, and the
 per-domain results already written are kept, so a redeploy costs you the domains
 still in flight rather than the whole batch.

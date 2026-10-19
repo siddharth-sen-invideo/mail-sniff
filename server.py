@@ -39,8 +39,17 @@ app.include_router(api.router)
 
 @app.on_event("startup")
 async def _startup():
-    store.init()
-    jobs.start()          # resumes anything a restart interrupted
+    # Nothing optional may abort startup. A failure here used to raise out of
+    # the hook and uvicorn exited with "Application startup failed", taking the
+    # whole site down over a cache file.
+    try:
+        store.init()
+    except Exception as e:                 # pragma: no cover - belt and braces
+        print("[startup] store unavailable, continuing without it: %s" % e)
+    try:
+        jobs.start()      # resumes anything a restart interrupted
+    except Exception as e:
+        print("[startup] job worker not started: %s" % e)
 
 
 @app.on_event("shutdown")

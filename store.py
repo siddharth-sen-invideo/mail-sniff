@@ -13,13 +13,30 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import tempfile
 import threading
 import time
 import uuid
 from typing import Any, Dict, List, Optional
 
-DB_PATH = os.environ.get("MAILSNIFF_DB", os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "mailsniff.db"))
+# Where the cache and job queue live. The default sits next to the code, which
+# is NOT writable in a hardened container (read-only rootfs, or a non-root user
+# against a root-owned image dir). That used to raise out of the startup hook
+# and kill the whole app, so the path is now chosen by trying candidates in
+# order and the store degrades to shared in-memory rather than taking the API
+# down with it.
+_DEFAULT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mailsniff.db")
+DB_PATH = os.environ.get("MAILSNIFF_DB") or _DEFAULT
+
+# a shared-cache in-memory DB is visible to every connection in this process,
+# unlike plain ":memory:" which would give each thread its own empty database
+_MEMORY_URI = "file:mailsniff-mem?mode=memory&cache=shared"
+
+AVAILABLE = False          # has a usable store been opened?
+PERSISTENT = False         # is it on disk (survives a restart) or memory-only?
+DEGRADED_REASON = ""
+_resolved = None
+_memory_keepalive = None   # an open handle keeps the shared memory DB alive
 
 # A site's contact page does not change hourly. Re-scraping on every call is the
 # single biggest waste for a tool that looks up the same domains repeatedly.
@@ -29,21 +46,36 @@ JOB_RETENTION = int(os.environ.get("MAILSNIFF_JOB_RETENTION_DAYS", "14")) * 8640
 _local = threading.local()
 
 
+def _open(path: str) -> sqlite3.Connection:
+    uri = path.startswith("file:")
+    c = sqlite3.connect(path, timeout=15, check_same_thread=False, uri=uri)
+    c.row_factory = sqlite3.Row
+    if not uri:
+        c.execute("PRAGMA journal_mode=WAL")      # pointless on a memory DB
+    c.execute("PRAGMA busy_timeout=15000")
+    c.execute("PRAGMA synchronous=NORMAL")
+    return c
+
+
+def _candidates():
+    yield DB_PATH, True
+    tmp = os.path.join(tempfile.gettempdir(), "mailsniff.db")
+    if tmp != DB_PATH:
+        yield tmp, True
+    yield _MEMORY_URI, False
+
+
 def _conn() -> sqlite3.Connection:
     c = getattr(_local, "conn", None)
     if c is None:
-        c = sqlite3.connect(DB_PATH, timeout=15, check_same_thread=False)
-        c.row_factory = sqlite3.Row
-        c.execute("PRAGMA journal_mode=WAL")
-        c.execute("PRAGMA busy_timeout=15000")
-        c.execute("PRAGMA synchronous=NORMAL")
+        if _resolved is None:
+            init()
+        c = _open(_resolved or _MEMORY_URI)
         _local.conn = c
     return c
 
 
-def init() -> None:
-    c = _conn()
-    c.executescript("""
+_SCHEMA = """
     CREATE TABLE IF NOT EXISTS cache (
         domain      TEXT PRIMARY KEY,
         result      TEXT NOT NULL,
@@ -66,14 +98,57 @@ def init() -> None:
     );
     CREATE INDEX IF NOT EXISTS jobs_created ON jobs(created_at);
     CREATE INDEX IF NOT EXISTS jobs_status  ON jobs(status);
-    """)
-    c.commit()
+"""
+
+
+def init() -> None:
+    """Open the best store we can. NEVER raises: losing the cache is a
+    degradation, losing the API is an outage."""
+    global AVAILABLE, PERSISTENT, DEGRADED_REASON, _resolved, _memory_keepalive
+    if AVAILABLE:
+        return
+    problems = []
+    for path, persistent in _candidates():
+        try:
+            parent = os.path.dirname(path)
+            if persistent and parent:
+                os.makedirs(parent, exist_ok=True)
+            c = _open(path)
+            c.executescript(_SCHEMA)
+            c.commit()
+            if not persistent:
+                _memory_keepalive = c      # closing the last handle wipes it
+            else:
+                c.close()
+            _resolved, AVAILABLE, PERSISTENT = path, True, persistent
+            if not persistent:
+                DEGRADED_REASON = ("no writable location for %s (%s); cache and "
+                                   "jobs are in memory and will not survive a "
+                                   "restart. Set MAILSNIFF_DB to a writable "
+                                   "volume." % (DB_PATH, "; ".join(problems)))
+                print("[store] WARNING: " + DEGRADED_REASON)
+            elif path != DB_PATH:
+                DEGRADED_REASON = ("using %s because %s is not writable" % (path, DB_PATH))
+                print("[store] " + DEGRADED_REASON)
+            return
+        except Exception as e:
+            problems.append("%s: %s" % (path, str(e)[:80]))
+            continue
+    DEGRADED_REASON = "; ".join(problems) or "unknown"
+    print("[store] WARNING: store unavailable (%s); running without cache or jobs"
+          % DEGRADED_REASON)
+
+
+def status() -> Dict[str, Any]:
+    return {"available": AVAILABLE, "persistent": PERSISTENT,
+            "path": _resolved if PERSISTENT else "memory",
+            "note": DEGRADED_REASON or None}
 
 
 # ---------------------------------------------------------------- cache
 def cache_get(domain: str, max_age: Optional[int] = None) -> Optional[Dict[str, Any]]:
     ttl = CACHE_TTL if max_age is None else max_age
-    if ttl <= 0:
+    if ttl <= 0 or not AVAILABLE:
         return None
     row = _conn().execute(
         "SELECT result, found_at FROM cache WHERE domain=?", (domain.lower(),)).fetchone()
@@ -86,6 +161,8 @@ def cache_get(domain: str, max_age: Optional[int] = None) -> Optional[Dict[str, 
 
 
 def cache_put(domain: str, result: Dict[str, Any]) -> None:
+    if not AVAILABLE:
+        return
     c = _conn()
     c.execute("INSERT OR REPLACE INTO cache(domain, result, found_at) VALUES (?,?,?)",
               (domain.lower(), json.dumps(result), time.time()))
@@ -93,6 +170,9 @@ def cache_put(domain: str, result: Dict[str, Any]) -> None:
 
 
 def cache_stats() -> Dict[str, Any]:
+    if not AVAILABLE:
+        return {"entries": 0, "fresh": 0, "ttl_days": CACHE_TTL // 86400,
+                "note": "store unavailable"}
     c = _conn()
     n = c.execute("SELECT COUNT(*) n FROM cache").fetchone()["n"]
     fresh = c.execute("SELECT COUNT(*) n FROM cache WHERE found_at > ?",
